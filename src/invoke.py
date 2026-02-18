@@ -1,5 +1,4 @@
 """统一调用入口。
-
 对外暴露 `invoke(cli, prompt)`，屏蔽不同 provider 的实现差异。
 """
 
@@ -10,23 +9,25 @@ from typing import Any, Callable, Dict, Optional
 
 from src.providers.claude_minimax import invoke_claude_minimax
 from src.providers.codex import invoke_codex
-from src.providers.xxx import invoke_xxx
 from src.utils.process_runner import ProcessExecutionError
 from src.utils.runtime_config import load_runtime_config
 from src.utils.session_store import get_session_id, set_session_id
 
 ProviderFn = Callable[..., Dict[str, Any]]
 
-# 只保留“规范名称”，避免会话 key 分叉。
+# 仅保留当前实现的两个 provider：codex 与 claude-minimax。
 PROVIDERS: Dict[str, ProviderFn] = {
     "codex": invoke_codex,
     "claude-minimax": invoke_claude_minimax,
-    "xxx": invoke_xxx,
 }
 
-# 对外兼容别名输入，但内部统一映射到规范名称。
+# Friends Bar 对外命名：
+# - codex -> 玲娜贝儿
+# - claude-minimax -> 达菲
 CLI_ALIASES = {
     "claude_minimax": "claude-minimax",
+    "玲娜贝儿": "codex",
+    "达菲": "claude-minimax",
 }
 
 SUPPORTED_CLIS = tuple(sorted(set(PROVIDERS.keys()) | set(CLI_ALIASES.keys())))
@@ -34,8 +35,12 @@ SUPPORTED_CLIS = tuple(sorted(set(PROVIDERS.keys()) | set(CLI_ALIASES.keys())))
 
 def _normalize_cli(cli: str) -> str:
     """把外部输入的 cli 名称标准化为内部规范 key。"""
-    raw = (cli or "").strip().lower()
-    return CLI_ALIASES.get(raw, raw)
+    raw = (cli or "").strip()
+    # 先尝试原样匹配（兼容中文别名），再做小写匹配（兼容英文大小写）。
+    if raw in CLI_ALIASES:
+        return CLI_ALIASES[raw]
+    lower_raw = raw.lower()
+    return CLI_ALIASES.get(lower_raw, lower_raw)
 
 
 def _is_retryable_process_error(error: ProcessExecutionError) -> bool:
@@ -83,6 +88,7 @@ def invoke(
     """
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("prompt must be a non-empty string")
+
     provider_name = _normalize_cli(cli)
     provider = PROVIDERS.get(provider_name)
     if provider is None:
@@ -134,9 +140,7 @@ def invoke(
     if int(resolved_retry_attempts) < 0:
         raise ValueError("retry_attempts must be >= 0")
 
-    last_session_id = (
-        get_session_id(provider_name) if resolved_use_session else None
-    )
+    last_session_id = get_session_id(provider_name) if resolved_use_session else None
 
     attempt = 0
     while True:

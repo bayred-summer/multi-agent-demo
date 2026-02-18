@@ -25,6 +25,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "codex": {"timeout_level": "standard", "retry_attempts": 1},
         "claude-minimax": {"timeout_level": "standard", "retry_attempts": 1},
     },
+    "friends_bar": {
+        "name": "Friends Bar",
+        "default_rounds": 4,
+        "start_agent": "玲娜贝儿",
+        "agents": {
+            "玲娜贝儿": {"provider": "codex"},
+            "达菲": {"provider": "claude-minimax"},
+        },
+    },
     "timeouts": {
         "quick": {
             "idle_timeout_s": 60.0,
@@ -63,6 +72,10 @@ def _normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
     defaults = normalized.get("defaults", {})
     defaults["retry_attempts"] = int(defaults.get("retry_attempts", 1))
     defaults["retry_backoff_s"] = float(defaults.get("retry_backoff_s", 1.0))
+
+    friends_bar = normalized.get("friends_bar", {})
+    if isinstance(friends_bar, dict):
+        friends_bar["default_rounds"] = int(friends_bar.get("default_rounds", 4))
 
     for profile_name, profile in normalized.get("timeouts", {}).items():
         if not isinstance(profile, dict):

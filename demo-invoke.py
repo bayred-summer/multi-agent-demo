@@ -11,12 +11,11 @@ from src.invoke import invoke
 def main() -> int:
     """演示如何通过统一入口调用多个 provider。"""
     try:
-        # 先调用占位 provider（示例中显式关闭会话，覆盖配置文件）。
-        invoke("xxx", "hello", use_session=False)
-        # 再调用 codex provider（使用 config.toml 默认参数）。
-        invoke("codex", "hello")
-        # 最后调用 Claude MiniMax provider（使用 config.toml 默认参数）。
-        invoke("claude-minimax", "hello")
+        # 直接用 Friends Bar 的中文命名触发调用：
+        # - 玲娜贝儿 => codex
+        # - 达菲 => claude-minimax
+        invoke("玲娜贝儿", "请用一句话介绍你在 Friends Bar 的职责", use_session=False)
+        invoke("达菲", "请用一句话介绍你在 Friends Bar 的职责", use_session=False)
         return 0
     except Exception as exc:
         # 把运行异常打印到 stderr，方便定位问题。

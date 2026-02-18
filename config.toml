@@ -16,6 +16,18 @@ retry_attempts = 1
 timeout_level = "standard"
 retry_attempts = 1
 
+# Friends Bar（Phase0）双 Agent 配置
+[friends_bar]
+name = "Friends Bar"
+default_rounds = 4
+start_agent = "玲娜贝儿"
+
+[friends_bar.agents."玲娜贝儿"]
+provider = "codex"
+
+[friends_bar.agents."达菲"]
+provider = "claude-minimax"
+
 # 超时档位配置
 [timeouts.quick]
 idle_timeout_s = 60
@@ -31,4 +43,3 @@ terminate_grace_s = 5
 idle_timeout_s = 900
 max_timeout_s = 3600
 terminate_grace_s = 8
-
