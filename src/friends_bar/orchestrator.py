@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.friends_bar.agents import AGENTS, normalize_agent_name
@@ -56,6 +57,7 @@ def _build_turn_prompt(
     user_request: str,
     current_agent: str,
     peer_agent: str,
+    workdir: str,
     transcript: List[Dict[str, Any]],
     extra_instruction: Optional[str] = None,
 ) -> str:
@@ -69,10 +71,13 @@ def _build_turn_prompt(
     extra_text = f"\n{extra_instruction}\n" if extra_instruction else ""
     return (
         f"任务目标：{user_request}\n\n"
+        f"执行目录：{workdir}\n"
+        f"你已在该目录中执行任务，可直接读写文件，不要请求访问权限。\n\n"
         f"当前协作历史：\n{history_text}\n\n"
         f"{peer_question_text}"
         f"你是“{current_agent}”，职责：{mission}\n"
         f"请直接围绕任务作答，禁止解释系统/角色/脚本/运行方式。\n"
+        f"禁止输出“无法访问目录”“请授权”“请先提供文件列表”等请求。\n"
         f"不要问好，不要寒暄，不要自我介绍。\n\n"
         f"输出要求：\n"
         f"1) 第一行必须以“发送给{peer_agent}：”开头，说明这条消息的接收方；\n"
@@ -89,6 +94,7 @@ def run_two_agent_dialogue(
     *,
     rounds: Optional[int] = None,
     start_agent: Optional[str] = None,
+    project_path: Optional[str] = None,
     use_session: bool = False,
     stream: bool = True,
     timeout_level: Optional[str] = "standard",
@@ -100,6 +106,7 @@ def run_two_agent_dialogue(
     - user_request: 用户输入的任务目标
     - rounds: 总轮次（每轮仅一个 Agent 发言），默认读取 config.toml
     - start_agent: 首轮发言的 Agent（支持中文名与 provider 别名），默认读取 config.toml
+    - project_path: agent 任务执行目录；为空时使用当前工作目录
     - use_session: 是否复用 CLI session（默认关闭，保证单次演示隔离）
     - stream: 是否实时打印每轮结果
     - timeout_level: 调用超时档位（quick/standard/complex）
@@ -123,6 +130,12 @@ def run_two_agent_dialogue(
         if start_agent is None
         else start_agent
     )
+    resolved_workdir = str(Path.cwd()) if project_path is None else str(Path(project_path))
+    if not Path(resolved_workdir).exists():
+        raise ValueError(f"project_path does not exist: {resolved_workdir}")
+    if not Path(resolved_workdir).is_dir():
+        raise ValueError(f"project_path is not a directory: {resolved_workdir}")
+
     current_agent = normalize_agent_name(resolved_start_agent)
     transcript: List[Dict[str, Any]] = []
 
@@ -132,6 +145,7 @@ def run_two_agent_dialogue(
             user_request=user_request,
             current_agent=current_agent,
             peer_agent=peer_agent,
+            workdir=resolved_workdir,
             transcript=transcript,
         )
         result = invoke(
@@ -139,6 +153,7 @@ def run_two_agent_dialogue(
             adjusted_prompt,
             use_session=use_session,
             stream=False,
+            workdir=resolved_workdir,
             timeout_level=timeout_level,
         )
 

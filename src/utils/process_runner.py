@@ -157,6 +157,7 @@ def run_stream_process(
     provider: str,
     command: str,
     args: List[str],
+    workdir: Optional[str],
     timeout: TimeoutConfig,
     stream_stderr: bool,
     stderr_prefix: str,
@@ -164,6 +165,8 @@ def run_stream_process(
 ) -> ProcessResult:
     """运行一个流式 CLI 子进程。"""
     command_repr = " ".join([command, *args])
+    if workdir:
+        command_repr = f"{command_repr} (cwd={workdir})"
     start = time.monotonic()
     last_activity = start
     activity_lock = threading.Lock()
@@ -238,6 +241,7 @@ def run_stream_process(
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                cwd=workdir,
                 text=True,
                 encoding="utf-8",
                 errors="replace",

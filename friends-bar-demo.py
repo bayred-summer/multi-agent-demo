@@ -27,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="首轮 Agent，支持：玲娜贝儿 / 达菲 / codex / claude-minimax；默认读取 config.toml",
     )
     parser.add_argument(
+        "--project-path",
+        default=None,
+        help="任务执行目录；为空时使用当前目录",
+    )
+    parser.add_argument(
         "--use-session",
         action="store_true",
         help="启用 provider session 续聊（默认关闭）",
@@ -47,6 +52,7 @@ def main() -> int:
             args.prompt,
             rounds=args.rounds,
             start_agent=args.start_agent,
+            project_path=args.project_path,
             use_session=args.use_session,
             stream=True,
             timeout_level=args.timeout_level,

@@ -94,6 +94,7 @@ def invoke_claude_minimax(
     session_id: Optional[str] = None,
     stream: bool = True,
     *,
+    workdir: Optional[str] = None,
     timeout_level: str = "standard",
     idle_timeout_s: Optional[float] = None,
     max_timeout_s: Optional[float] = None,
@@ -155,6 +156,7 @@ def invoke_claude_minimax(
             provider="claude-minimax",
             command=claude_command,
             args=args,
+            workdir=workdir,
             timeout=timeout,
             stream_stderr=stream,
             stderr_prefix="[claude stderr] ",
@@ -181,4 +183,3 @@ def invoke_claude_minimax(
         "session_id": state.get("session_id"),
         "elapsed_ms": result.elapsed_ms,
     }
-

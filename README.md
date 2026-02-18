@@ -54,6 +54,12 @@ python minimal-claude-minimax.py "你好，请用一句话介绍自己"
 python friends-bar-demo.py "请你们一起给出一个 ToDo App 的最小上线方案" --rounds 4
 ```
 
+让 agent 直接在目标项目目录执行任务：
+
+```bash
+python friends-bar-demo.py "请直接开始实现并提交最小可运行版本" --rounds 2 --project-path E:\PythonProjects\test_project
+```
+
 ## 统一接口
 
 ```python

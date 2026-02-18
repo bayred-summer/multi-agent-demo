@@ -131,6 +131,7 @@ def invoke_codex(
     session_id: Optional[str] = None,
     stream: bool = True,
     *,
+    workdir: Optional[str] = None,
     timeout_level: str = "standard",
     idle_timeout_s: Optional[float] = None,
     max_timeout_s: Optional[float] = None,
@@ -187,6 +188,7 @@ def invoke_codex(
             provider="codex",
             command=codex_command,
             args=args,
+            workdir=workdir,
             timeout=timeout,
             stream_stderr=stream,
             stderr_prefix="[codex stderr] ",
@@ -213,4 +215,3 @@ def invoke_codex(
         "session_id": state.get("thread_id"),
         "elapsed_ms": result.elapsed_ms,
     }
-
