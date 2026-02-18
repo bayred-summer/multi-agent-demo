@@ -1,11 +1,14 @@
 # Runtime cache
 .sessions/
 
-# Node
-node_modules/
-npm-debug.log*
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
 
 # OS
 .DS_Store
 Thumbs.db
-
