@@ -24,9 +24,8 @@ def main() -> int:
         return 1
 
     try:
-        # use_session=True: 自动读取并续接上一次 codex 会话。
-        # stream=True: 按流式实时打印模型输出。
-        invoke("codex", prompt, use_session=True, stream=True)
+        # 默认行为由 config.toml 决定；这里仅指定 provider 与 prompt。
+        invoke("codex", prompt)
         return 0
     except Exception as exc:
         # 统一把异常打印到 stderr，便于在终端或 CI 中排查。

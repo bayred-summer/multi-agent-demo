@@ -1,0 +1,34 @@
+# 全局默认配置
+[defaults]
+provider = "codex"
+use_session = true
+stream = true
+timeout_level = "standard"
+retry_attempts = 1
+retry_backoff_s = 1.0
+
+# provider 级默认值（可选）
+[providers.codex]
+timeout_level = "standard"
+retry_attempts = 1
+
+[providers.claude-minimax]
+timeout_level = "standard"
+retry_attempts = 1
+
+# 超时档位配置
+[timeouts.quick]
+idle_timeout_s = 60
+max_timeout_s = 300
+terminate_grace_s = 3
+
+[timeouts.standard]
+idle_timeout_s = 300
+max_timeout_s = 1800
+terminate_grace_s = 5
+
+[timeouts.complex]
+idle_timeout_s = 900
+max_timeout_s = 3600
+terminate_grace_s = 8
+

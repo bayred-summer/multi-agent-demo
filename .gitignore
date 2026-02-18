@@ -1,5 +1,6 @@
 # Runtime cache
 .sessions/
+config.local.toml
 
 # Python
 __pycache__/

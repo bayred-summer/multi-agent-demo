@@ -22,7 +22,8 @@ def main() -> int:
         return 1
 
     try:
-        invoke("claude-minimax", prompt, use_session=True, stream=True)
+        # 默认行为由 config.toml 决定；这里仅指定 provider 与 prompt。
+        invoke("claude-minimax", prompt)
         return 0
     except Exception as exc:
         print(str(exc), file=sys.stderr)
@@ -31,4 +32,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

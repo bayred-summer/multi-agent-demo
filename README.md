@@ -12,6 +12,7 @@
 
 ```text
 multi-agent-demo/
+|-- config.toml
 |-- minimal-codex.py
 |-- minimal-claude-minimax.py
 |-- demo-invoke.py
@@ -22,14 +23,15 @@ multi-agent-demo/
 |   |   |-- claude_minimax.py
 |   |   `-- xxx.py
 |   `-- utils/
-|       |-- session_store.py
-|       `-- process_runner.py
+|       |-- process_runner.py
+|       |-- runtime_config.py
+|       `-- session_store.py
 `-- .sessions/
 ```
 
 ## 环境要求
 
-- Python 3.9+
+- Python 3.11+（`runtime_config.py` 使用内置 `tomllib` 读取 TOML）
 - 已安装并登录 Codex CLI
 - 已安装并配置 Claude CLI（MiniMax Coding Plan）
 
@@ -48,7 +50,7 @@ from src.invoke import invoke
 
 invoke("codex", "你好")
 invoke("claude-minimax", "你好")
-invoke("claude_minimax", "你好")  # 别名，内部会归一化为 claude-minimax
+invoke("claude_minimax", "你好")  # 别名，内部归一为 claude-minimax
 ```
 
 返回结构：
@@ -60,72 +62,81 @@ invoke("claude_minimax", "你好")  # 别名，内部会归一化为 claude-mini
     "text": "...",
     "session_id": "...",
     "elapsed_ms": 1234,
+    "timeout_level": "standard",
+    "retry_count": 0,
 }
 ```
 
-## 生产可用增强
+## 配置文件（config.toml）
 
-### 1) 双通道活跃心跳
+项目根目录下的 `config.toml` 用于管理生产参数。  
+你也可以创建 `config.local.toml` 做本机覆盖（已加入 `.gitignore`）。
 
-- 同时消费 `stdout` 和 `stderr`
-- 任一通道有输出都会刷新活动时间，避免 thinking/tool 阶段误判超时
+优先级：
 
-### 2) 任务级超时配置
+1. 调用 `invoke()` 时显式传入的参数
+2. `config.local.toml`
+3. `config.toml`
+4. 代码内置默认值
 
-- 内置级别：
-  - `quick`: 60s 空闲 / 300s 总时长
-  - `standard`: 300s 空闲 / 1800s 总时长
-  - `complex`: 900s 空闲 / 3600s 总时长
-- 支持按调用覆盖：
-  - `idle_timeout_s`
-  - `max_timeout_s`
-  - `terminate_grace_s`
+### 示例配置
 
-### 3) 超时后的优雅终止
+```toml
+[defaults]
+provider = "codex"
+use_session = true
+stream = true
+timeout_level = "standard"
+retry_attempts = 1
+retry_backoff_s = 1.0
 
-- 先 `terminate()`
-- 等待 `terminate_grace_s`
-- 仍未退出则 `kill()`
+[providers.codex]
+timeout_level = "standard"
+retry_attempts = 1
 
-### 4) 生命周期治理
+[providers.claude-minimax]
+timeout_level = "complex"
+retry_attempts = 2
 
-- 注册 `SIGINT` / `SIGTERM` 处理
-- 注册 `atexit` 清理
-- 保证异常路径下也会 `wait()` 回收子进程，防止僵尸进程
+[timeouts.quick]
+idle_timeout_s = 60
+max_timeout_s = 300
+terminate_grace_s = 3
 
-### 5) 重试机制
+[timeouts.standard]
+idle_timeout_s = 300
+max_timeout_s = 1800
+terminate_grace_s = 5
 
-- `invoke()` 支持 `retry_attempts`（默认 1）
-- 对可重试故障自动指数退避重试（空闲超时、总超时、部分瞬时非零退出）
-
-### 6) 结构化错误诊断
-
-- 错误包含：`provider`、`reason`、`command`、`elapsed_ms`、`return_code`、`session_id`、`stderr_tail`
-- 便于日志检索和生产排障
-
-## 高级参数示例
-
-```python
-invoke(
-    "claude-minimax",
-    "请分析这个仓库的架构风险",
-    use_session=True,
-    stream=True,
-    timeout_level="complex",
-    idle_timeout_s=1200,
-    max_timeout_s=3600,
-    terminate_grace_s=8,
-    retry_attempts=2,
-    retry_backoff_s=1.5,
-)
+[timeouts.complex]
+idle_timeout_s = 900
+max_timeout_s = 3600
+terminate_grace_s = 8
 ```
+
+## 为什么选 TOML（而不是 YAML/.env）
+
+1. 对 Python 友好：`tomllib` 是 Python 内置库（3.11+），不需要额外依赖。  
+2. 可读性好：层级清晰，适合表达 `defaults/providers/timeouts` 这类结构化配置。  
+3. 类型更明确：数字、布尔值、字符串天然有类型，避免 `.env` 全是字符串导致转换问题。  
+4. 维护成本低：比 YAML 语法更收敛，减少缩进和语法陷阱。  
+5. 适合版本管理：`config.toml` 可提交；`config.local.toml` 可本地覆盖，不污染团队基线。
+
+## 生产能力摘要
+
+1. 双通道活跃心跳：同时监听 stdout/stderr。  
+2. 任务级超时：`quick/standard/complex` + 显式覆盖。  
+3. 超时优雅终止：`terminate()` -> 等待 -> `kill()`。  
+4. 生命周期治理：SIGINT/SIGTERM、atexit、异常回收。  
+5. 重试机制：对可重试错误做指数退避。  
+6. 结构化错误：包含 reason、command、elapsed_ms、stderr_tail 等。
 
 ## Session 机制
 
 - 文件：`.sessions/session-store.json`
-- 按 provider key 存储
-- 成功调用后更新 session_id
-- 下次同 provider 自动续聊
+- 按 provider key 保存 session_id
+- 成功调用后自动更新
+- 下一次同 provider 自动续聊
 
 重置上下文：删除 `.sessions/session-store.json`。
 
