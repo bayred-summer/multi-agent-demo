@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-import re
 import sys
+import time
+import traceback
 from typing import Any, Dict, List, Optional
 
 from src.friends_bar.agents import (
@@ -15,12 +17,18 @@ from src.friends_bar.agents import (
     normalize_agent_name,
 )
 from src.invoke import invoke
+from src.protocol.models import build_task_envelope
+from src.protocol.validators import (
+    build_agent_output_schema,
+    validate_json_protocol_content,
+)
+from src.utils.audit_log import AuditLogConfig, AuditLogger, text_meta
 from src.utils.runtime_config import load_runtime_config
 
 # Phase0 currently supports a fixed two-agent turn order.
 AGENT_TURN_ORDER = (LINA_BELL, DUFFY)
-# Keep a single provider call per turn to avoid long silent waits.
-MAX_PROTOCOL_RETRY = 0
+# Keep retries small but non-zero for strict schema re-generation.
+MAX_PROTOCOL_RETRY = 3
 
 
 def _next_agent(current_name: str) -> str:
@@ -30,32 +38,47 @@ def _next_agent(current_name: str) -> str:
     return AGENT_TURN_ORDER[0]
 
 
-def validate_minimal_protocol(output: str, peer_agent: str) -> tuple[bool, list[str]]:
-    """Validate minimal protocol compliance for one agent output."""
-    errors: list[str] = []
-    lines = output.strip().splitlines()
+def _validate_agent_output(
+    *,
+    current_agent: str,
+    output: str,
+    peer_agent: str,
+    trace_id: str = "",
+) -> tuple[bool, list[str], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Validate strict JSON protocol output and return normalized content."""
+    raw = (output or "").strip()
+    if not raw:
+        return False, ["E_SCHEMA_INVALID_FORMAT: empty output"], None, None
 
-    if not lines:
-        errors.append("输出为空")
-        return False, errors
-
-    peer_display = display_agent_name(peer_agent)
-    first_line = lines[0].strip()
-    last_line = lines[-1].strip()
-
-    expected_first = f"发送给{peer_display}：路由确认"
-    if first_line != expected_first:
-        errors.append(
-            f"第一行必须是：{expected_first}，实际：{first_line[:50]}..."
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return (
+            False,
+            [f"E_SCHEMA_INVALID_FORMAT: output is not valid JSON ({exc.msg})"],
+            None,
+            None,
         )
 
-    expected_prefix = f"发送给{peer_display}："
-    if not last_line.startswith(expected_prefix):
-        errors.append(f"最后一行必须以「{expected_prefix}」开头")
-    elif len(last_line) <= len(expected_prefix):
-        errors.append("最后一行必须包含具体问题，不能为空")
+    if not isinstance(payload, dict):
+        return (
+            False,
+            ["E_SCHEMA_INVALID_FORMAT: output must be one JSON object"],
+            None,
+            None,
+        )
 
-    return len(errors) == 0, errors
+    peer_display = display_agent_name(peer_agent)
+    parsed = validate_json_protocol_content(
+        current_agent=current_agent,
+        peer_display=peer_display,
+        payload=payload,
+        trace_id=trace_id,
+    )
+    if not parsed.ok:
+        errors = [f"{item.get('code')}: {item.get('message')}" for item in parsed.errors]
+        return False, errors, parsed.parsed_content, payload
+    return True, [], parsed.parsed_content, payload
 
 
 def _safe_print(text: str) -> None:
@@ -78,91 +101,53 @@ def _format_history(transcript: List[Dict[str, Any]]) -> str:
     lines: List[str] = []
     for item in transcript:
         agent_display = display_agent_name(item["agent"])
-        lines.append(f"第{item['turn']}轮 {agent_display}：{item['text']}")
+        content = item.get("protocol_content")
+        if isinstance(content, dict):
+            history_brief = {
+                "schema_version": content.get("schema_version"),
+                "status": content.get("status"),
+                "acceptance": content.get("acceptance"),
+                "next_question": content.get("next_question"),
+            }
+            lines.append(
+                f"第{item['turn']}轮 {agent_display}："
+                + json.dumps(history_brief, ensure_ascii=False)
+            )
+        else:
+            raw_text = str(item.get("text") or "")
+            lines.append(f"第{item['turn']}轮 {agent_display}：{raw_text[:300]}")
     return "\n".join(lines)
 
 
 def _extract_peer_question(
     transcript: List[Dict[str, Any]],
-    current_agent: str,
 ) -> Optional[str]:
-    """Extract the latest line explicitly addressed to current agent."""
+    """Extract latest question from structured JSON content."""
     if not transcript:
         return None
 
-    current_display = display_agent_name(current_agent)
-    markers = (
-        f"发送给{current_display}：",
-        f"发送给{current_agent}：",
-        f"给{current_display}：",
-        f"给{current_agent}：",
-    )
-
     for item in reversed(transcript):
-        text = item.get("text") or ""
-        for line in reversed(text.splitlines()):
-            for marker in markers:
-                if marker in line:
-                    extracted = line.split(marker, 1)[1].strip()
-                    if extracted:
-                        return extracted
+        content = item.get("protocol_content")
+        if isinstance(content, dict):
+            next_question = content.get("next_question")
+            if isinstance(next_question, str) and next_question.strip():
+                return next_question.strip()
     return None
 
 
 def _agent_output_contract(*, current_agent: str, peer_agent: str) -> str:
-    """Return role-specific output contract for stable multi-agent handoff."""
+    """Return strict JSON output contract for stable multi-agent handoff."""
     peer_display = display_agent_name(peer_agent)
+    schema = build_agent_output_schema(current_agent)
+    schema_text = json.dumps(schema, ensure_ascii=False, indent=2)
 
-    common_rules = (
-        "元规则（来自 03-meta-rules）\n"
-        "1) 先复述任务与约束，再行动；不能跳过问题定义。\n"
-        "2) 只陈述有证据的结论；禁止猜测与表演式同意。\n"
-        "3) 发现不合理假设要直接指出，并给出替代方案。\n"
-        "4) 无法确认的事项必须标注「未验证」，不要伪造完成状态。\n"
-        "5) 评审以质量门禁为先，不做「老好人」式放行。\n"
-        "\n"
-        "固定消息边界\n"
-        f"- 第一行必须是：发送给{peer_display}：路由确认\n"
-        f"- 最后一行必须是：发送给{peer_display}：<一个明确问题>\n"
+    return (
+        "输出必须严格遵循 JSON schema。\n"
+        "只允许输出一个 JSON 对象；禁止输出 Markdown、代码块、前后解释文本。\n"
+        f"`next_question` 必须面向接收方 {peer_display}，并包含问号。\n"
+        "若证据不足，请在 JSON 中用 status/warnings/errors 明确表达，禁止自然语言补丁。\n"
+        f"JSON Schema:\n{schema_text}"
     )
-
-    if current_agent == LINA_BELL:
-        return (
-            f"{common_rules}\n"
-            "你当前角色：开发实现 + 发布运维。\n"
-            "你的输出必须按以下区块顺序，且区块名不得改动：\n"
-            "[接收方]\n"
-            "[任务理解]：目标 / 范围外 / 验收标准\n"
-            "[实施清单]：将修改的文件、命令、部署或环境动作\n"
-            "[执行证据]：命令 + 结果（失败也要写）\n"
-            "[风险与回滚]：风险点 + 回滚方案\n"
-            f"[给{peer_display}的问题]\n"
-            "约束：\n"
-            "- 声称“已完成”时，必须在[执行证据]给出命令级证据。\n"
-            "- 如果本轮未执行代码/命令，要明确写“未执行”及原因。\n"
-        )
-
-    if current_agent == DUFFY:
-        return (
-            f"{common_rules}\n"
-            "你当前角色：资深 Code Reviewer（兼 QA 测试负责人）。\n"
-            "你的首要目标是找出会导致功能错误、回归、安全或稳定性问题的缺陷，并给出可执行修复建议。\n"
-            "你的输出必须按以下区块顺序，且区块名不得改动：\n"
-            "[接收方]\n"
-            "[验收结论]：通过 / 有条件通过 / 不通过（只能三选一）\n"
-            "[核验清单]：本轮检查了哪些文件、命令和场景\n"
-            "[根因链]：问题触发路径与影响链路\n"
-            "[问题清单]：编号 / 严重级别(P0/P1/P2) / 类型 / 文件定位 / 证据 / 影响 / 修复建议 / 回归测试\n"
-            "[回归门禁]：允许合入 / 有条件合入 / 禁止合入 + 条件\n"
-            f"[给{peer_display}的问题]\n"
-            "约束：\n"
-            "- 优先级顺序：正确性 > 回归风险 > 安全 > 性能 > 可维护性。\n"
-            "- 禁止把纯样式意见当作阻塞项。\n"
-            "- 如未发现阻塞问题，必须明确“未发现阻塞问题”并写出剩余风险。\n"
-            "- 结论必须与证据一致，不得出现“无证据通过”。\n"
-        )
-
-    return common_rules
 
 
 def _build_turn_prompt(
@@ -180,7 +165,7 @@ def _build_turn_prompt(
     current_display = display_agent_name(current_agent)
     peer_display = display_agent_name(peer_agent)
     history_text = _format_history(transcript)
-    peer_question = _extract_peer_question(transcript, current_agent)
+    peer_question = _extract_peer_question(transcript)
     peer_question_text = f"对方刚才的问题：{peer_question}\n\n" if peer_question else ""
 
     extra_text = f"\n{extra_instruction}\n" if extra_instruction else ""
@@ -203,9 +188,8 @@ def _build_turn_prompt(
     if current_agent == DUFFY:
         role_guard = (
             "角色硬约束：你是评审官，不是实现者。"
-            "禁止输出“我来创建/修改/查看目录”等执行承诺，"
-            "必须直接给出中文评审结论与问题清单。"
-            "若证据不足，请标注“证据不足”并给出需补充证据。"
+            "必须先执行读取/测试命令再评审。"
+            "JSON 中 verification 至少包含2条命令证据。"
         )
 
     turn_task_goal = user_request
@@ -214,7 +198,8 @@ def _build_turn_prompt(
             "本轮仅做中文代码评审："
             "请以协作历史中最近一条来自玲娜贝儿的交付为评审对象，"
             "严格按输出协议给出验收结论、问题清单和回归门禁，"
-            "禁止执行实现或要求额外授权。"
+            "先读取实际文件并运行最小核验命令后再下结论，"
+            "禁止基于口头描述做评审，禁止执行实现或要求额外授权。"
         )
 
     return (
@@ -228,13 +213,15 @@ def _build_turn_prompt(
         "请直接围绕任务作答，禁止解释系统/角色/脚本/运行方式。\n"
         "禁止输出“无法访问目录”“请授权”“请先提供文件列表”等元请求。\n"
         "信息不足时先基于当前任务做最小可执行假设并继续推进，"
-        "仅当缺口会直接阻断交付时，才允许在最后一行提出1个明确问题。\n"
+        "仅当缺口会直接阻断交付时，才允许在 JSON 的 next_question 提出1个明确问题。\n"
         "硬性校验规则（违反会被判定失败并要求重写）：\n"
-        f"1) 第一行必须完全等于：发送给{peer_display}：路由确认\n"
-        f"2) 最后一行必须以：发送给{peer_display}： 开头，且包含一个明确问题\n"
-        "3) 禁止以“我先看一下”“让我先了解”等元话术作为首句\n"
+        "1) 输出必须是可被 json.loads 直接解析的单个 JSON 对象\n"
+        "2) 输出必须满足给定 JSON Schema\n"
+        "3) next_question 必须包含问号\n"
+        "4) 第一字符必须是 {，最后字符必须是 }\n"
+        "5) 禁止输出任何 JSON 之外字符（包括“我将先...”“```json”）\n"
         f"{role_guard}\n"
-        "不要问好，不要寒暄，不要自我介绍。\n\n"
+        "不要问好，不要寒暄，不要自我介绍，不要输出 JSON 之外的任何文本。\n\n"
         f"输出协议：\n{output_contract}\n"
         f"当前轮次接收方：{peer_display}\n"
         f"{extra_text}"
@@ -258,7 +245,7 @@ def _resolve_agent_runtime(
         provider_options["exec_mode"] = str(provider_defaults.get("exec_mode", "safe"))
     elif provider_name == "claude-minimax":
         provider_options["permission_mode"] = str(
-            provider_defaults.get("permission_mode", "default")
+            provider_defaults.get("permission_mode", "acceptEdits")
         )
         provider_options["include_partial_messages"] = bool(
             provider_defaults.get("include_partial_messages", False)
@@ -288,34 +275,28 @@ def _resolve_agent_runtime(
         if isinstance(agent_provider_opts, dict):
             provider_options.update(agent_provider_opts)
 
+    if (
+        agent_name == DUFFY
+        and provider_name == "claude-minimax"
+        and response_mode.strip().lower() == "execute"
+    ):
+        normalized_permission_mode = str(
+            provider_options.get("permission_mode", "")
+        ).strip()
+        if normalized_permission_mode in {
+            "",
+            "default",
+            "acceptEdits",
+            "delegate",
+            "dontAsk",
+            "plan",
+        }:
+            provider_options["permission_mode"] = "bypassPermissions"
+
     return {
         "response_mode": response_mode,
         "provider_options": provider_options,
     }
-
-
-def _coerce_protocol_output(raw_text: str, peer_agent: str) -> str:
-    """Wrap raw text into a protocol-compliant envelope as a final fallback."""
-    peer_display = display_agent_name(peer_agent)
-    cleaned = (raw_text or "").strip()
-
-    question = ""
-    if cleaned:
-        # Pick the last explicit question sentence when possible.
-        question_candidates = re.findall(r"([^\n。！？!?]*[？?])", cleaned)
-        if question_candidates:
-            question = question_candidates[-1].strip()
-    if not question:
-        question = "你希望我下一步优先处理哪一项？"
-
-    body_prefix = "[protocol_adapted] 原始输出未通过协议校验，已自动封装。"
-    body = f"{body_prefix}\n{cleaned}" if cleaned else body_prefix
-
-    return (
-        f"发送给{peer_display}：路由确认\n"
-        f"{body}\n"
-        f"发送给{peer_display}：{question}"
-    )
 
 
 def run_two_agent_dialogue(
@@ -335,6 +316,10 @@ def run_two_agent_dialogue(
 
     runtime_config = load_runtime_config(config_path=config_path)
     friends_bar_config = runtime_config.get("friends_bar", {})
+    if not isinstance(friends_bar_config, dict):
+        friends_bar_config = {}
+    audit_logger = AuditLogger(AuditLogConfig.from_runtime_config(friends_bar_config))
+    run_started = time.monotonic()
 
     resolved_rounds = (
         int(friends_bar_config.get("default_rounds", 4))
@@ -358,87 +343,271 @@ def run_two_agent_dialogue(
 
     current_agent = normalize_agent_name(resolved_start_agent)
     transcript: List[Dict[str, Any]] = []
+    run_error: Optional[Dict[str, Any]] = None
 
-    for turn in range(1, resolved_rounds + 1):
-        peer_agent = _next_agent(current_agent)
-        runtime_info = _resolve_agent_runtime(
-            runtime_config=runtime_config,
-            agent_name=current_agent,
+    audit_logger.log(
+        "run.started",
+        {
+            "workspace": "Friends Bar",
+            "config_path": config_path,
+            "user_request": user_request,
+            "user_request_meta": text_meta(
+                user_request,
+                include_preview=audit_logger.include_prompt_preview,
+                max_preview_chars=audit_logger.max_preview_chars,
+            ),
+            "args": {
+                "rounds": resolved_rounds,
+                "start_agent": current_agent,
+                "project_path": resolved_workdir,
+                "use_session": bool(use_session),
+                "timeout_level": timeout_level,
+                "stream": bool(stream),
+            },
+        },
+    )
+    audit_logger.log(
+        "protocol.task.envelope",
+        build_task_envelope(
+            trace_id=audit_logger.run_id,
+            sender="orchestrator",
+            recipient=current_agent,
+            intent="friends_bar_round_robin_task",
+            user_request=user_request,
+            workdir=resolved_workdir,
+            timeout_level=timeout_level,
+            expected_schema_version="friendsbar.review.v1",
+        ),
+    )
+
+    try:
+        for turn in range(1, resolved_rounds + 1):
+            turn_started = time.monotonic()
+            peer_agent = _next_agent(current_agent)
+            runtime_info = _resolve_agent_runtime(
+                runtime_config=runtime_config,
+                agent_name=current_agent,
+            )
+
+            audit_logger.log(
+                "turn.started",
+                {
+                    "turn": turn,
+                    "agent": current_agent,
+                    "peer_agent": peer_agent,
+                    "response_mode": runtime_info.get("response_mode"),
+                    "provider_options": runtime_info.get("provider_options", {}),
+                },
+            )
+
+            if stream:
+                current_display = display_agent_name(current_agent)
+                peer_display = display_agent_name(peer_agent)
+                print(f"\n[system] 第{turn}轮执行中：{current_display} -> {peer_display}")
+
+            text = ""
+            raw_text = ""
+            result: Dict[str, Any] = {}
+            protocol_errors: List[str] = []
+            extra_instruction: Optional[str] = None
+            attempt_count = 0
+            structured_content: Optional[Dict[str, Any]] = None
+            raw_payload: Optional[Dict[str, Any]] = None
+
+            for attempt_idx in range(MAX_PROTOCOL_RETRY + 1):
+                attempt_count = attempt_idx + 1
+                # Duffy review often needs extra pre-flight time for CLI tools.
+                effective_timeout_level = timeout_level
+                if current_agent == DUFFY and timeout_level == "quick":
+                    effective_timeout_level = "standard"
+
+                adjusted_prompt = _build_turn_prompt(
+                    user_request=user_request,
+                    current_agent=current_agent,
+                    peer_agent=peer_agent,
+                    workdir=resolved_workdir,
+                    response_mode=runtime_info["response_mode"],
+                    transcript=transcript,
+                    extra_instruction=extra_instruction,
+                )
+                audit_logger.log(
+                    "turn.attempt.started",
+                    {
+                        "turn": turn,
+                        "attempt": attempt_count,
+                        "agent": current_agent,
+                        "peer_agent": peer_agent,
+                        "timeout_level": effective_timeout_level,
+                        "prompt_meta": text_meta(
+                            adjusted_prompt,
+                            include_preview=audit_logger.include_prompt_preview,
+                            max_preview_chars=audit_logger.max_preview_chars,
+                        ),
+                    },
+                )
+
+                provider_options = dict(runtime_info["provider_options"])
+                agent_schema = build_agent_output_schema(current_agent)
+                if AGENTS[current_agent].provider == "claude-minimax":
+                    provider_options["json_schema"] = agent_schema
+                if AGENTS[current_agent].provider == "codex":
+                    provider_options["output_schema"] = agent_schema
+
+                try:
+                    result = invoke(
+                        current_agent,
+                        adjusted_prompt,
+                        use_session=use_session,
+                        stream=False,
+                        workdir=resolved_workdir,
+                        provider_options=provider_options,
+                        timeout_level=effective_timeout_level,
+                    )
+                except Exception as exc:
+                    audit_logger.log(
+                        "turn.attempt.failed",
+                        {
+                            "turn": turn,
+                            "attempt": attempt_count,
+                            "agent": current_agent,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        },
+                    )
+                    raise
+
+                raw_text = (result.get("text") or "").strip()
+                text = raw_text if raw_text else "（空回复）"
+
+                is_valid, protocol_errors, parsed_content, parsed_payload = _validate_agent_output(
+                    current_agent=current_agent,
+                    output=text,
+                    peer_agent=peer_agent,
+                    trace_id=audit_logger.run_id,
+                )
+                structured_content = parsed_content
+                raw_payload = parsed_payload
+                audit_logger.log(
+                    "turn.attempt.completed",
+                    {
+                        "turn": turn,
+                        "attempt": attempt_count,
+                        "agent": current_agent,
+                        "provider": result.get("cli"),
+                        "session_id": result.get("session_id"),
+                        "elapsed_ms": result.get("elapsed_ms"),
+                        "raw_text": raw_text,
+                        "raw_text_meta": text_meta(
+                            raw_text,
+                            include_preview=audit_logger.include_prompt_preview,
+                            max_preview_chars=audit_logger.max_preview_chars,
+                        ),
+                        "is_valid": is_valid,
+                        "protocol_errors": protocol_errors,
+                        "protocol_content": parsed_content,
+                        "protocol_raw_payload": parsed_payload,
+                    },
+                )
+                if is_valid:
+                    if isinstance(parsed_payload, dict):
+                        text = json.dumps(parsed_payload, ensure_ascii=False, indent=2)
+                    break
+
+                schema = build_agent_output_schema(current_agent)
+                extra_instruction = (
+                    "你上一条输出没有通过 JSON Schema 校验："
+                    + " / ".join(protocol_errors)
+                    + "。请在不改变任务目标的前提下输出一个合法 JSON 对象。\n"
+                    "禁止输出任何 JSON 之外文本；首字符必须是 {，末字符必须是 }。\n"
+                    "请严格匹配以下 schema：\n"
+                    + json.dumps(schema, ensure_ascii=False, indent=2)
+                )
+
+            if protocol_errors:
+                raise RuntimeError(
+                    f"JSON protocol validation failed after {attempt_count} attempts: "
+                    + " / ".join(protocol_errors)
+                )
+
+            turn_record = {
+                "turn": turn,
+                "agent": current_agent,
+                "provider": result.get("cli"),
+                "text": text,
+                "session_id": result.get("session_id"),
+                "elapsed_ms": result.get("elapsed_ms"),
+                "attempts": attempt_count,
+                "protocol_coerced": False,
+                "protocol_content": structured_content,
+                "protocol_raw_payload": raw_payload,
+            }
+            transcript.append(turn_record)
+            audit_logger.log(
+                "turn.completed",
+                {
+                    "turn": turn,
+                    "agent": current_agent,
+                    "peer_agent": peer_agent,
+                    "provider": result.get("cli"),
+                    "session_id": result.get("session_id"),
+                    "elapsed_ms": result.get("elapsed_ms"),
+                    "attempts": attempt_count,
+                    "protocol_coerced": False,
+                    "final_text": text,
+                    "final_text_meta": text_meta(
+                        text,
+                        include_preview=audit_logger.include_prompt_preview,
+                        max_preview_chars=audit_logger.max_preview_chars,
+                    ),
+                    "turn_duration_ms": int((time.monotonic() - turn_started) * 1000),
+                },
+            )
+
+            if stream:
+                current_display = display_agent_name(current_agent)
+                peer_display = display_agent_name(peer_agent)
+                print(f"\n[{current_display} -> {peer_display}]")
+                _safe_print(text)
+
+            current_agent = peer_agent
+    except Exception as exc:
+        run_error = {
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+            "turns_completed": len(transcript),
+        }
+        audit_logger.log("run.failed", run_error)
+        raise
+    finally:
+        summary: Dict[str, Any] = {
+            "workspace": "Friends Bar",
+            "rounds": resolved_rounds,
+            "turns_completed": len(transcript),
+            "elapsed_ms": int((time.monotonic() - run_started) * 1000),
+            "project_path": resolved_workdir,
+            "turns": transcript,
+        }
+        if run_error is not None:
+            summary["error"] = run_error
+        audit_logger.finalize(
+            status="failed" if run_error is not None else "success",
+            summary=summary,
         )
 
-        if stream:
-            current_display = display_agent_name(current_agent)
-            peer_display = display_agent_name(peer_agent)
-            print(f"\n[system] 第{turn}轮执行中：{current_display} -> {peer_display}")
-
-        text = ""
-        result: Dict[str, Any] = {}
-        protocol_errors: List[str] = []
-        extra_instruction: Optional[str] = None
-
-        for _ in range(MAX_PROTOCOL_RETRY + 1):
-            adjusted_prompt = _build_turn_prompt(
-                user_request=user_request,
-                current_agent=current_agent,
-                peer_agent=peer_agent,
-                workdir=resolved_workdir,
-                response_mode=runtime_info["response_mode"],
-                transcript=transcript,
-                extra_instruction=extra_instruction,
-            )
-
-            result = invoke(
-                current_agent,
-                adjusted_prompt,
-                use_session=use_session,
-                stream=False,
-                workdir=resolved_workdir,
-                provider_options=runtime_info["provider_options"],
-                timeout_level=timeout_level,
-            )
-
-            text = (result.get("text") or "").strip()
-            if not text:
-                text = "（空回复）"
-
-            is_valid, protocol_errors = validate_minimal_protocol(text, peer_agent)
-            if is_valid:
-                break
-
-            peer_display = display_agent_name(peer_agent)
-            extra_instruction = (
-                "你上一条输出没有通过协议校验："
-                + " / ".join(protocol_errors)
-                + "。请在不改变任务目标的前提下，"
-                "严格按协议完整重写整条输出，不要解释原因。\n"
-                f"重写时首行必须是：发送给{peer_display}：路由确认\n"
-                f"重写时末行必须是：发送给{peer_display}：<一个明确问题>\n"
-            )
-
-        if protocol_errors:
-            text = _coerce_protocol_output(text, peer_agent)
-
-        turn_record = {
-            "turn": turn,
-            "agent": current_agent,
-            "provider": result.get("cli"),
-            "text": text,
-            "session_id": result.get("session_id"),
-            "elapsed_ms": result.get("elapsed_ms"),
-        }
-        transcript.append(turn_record)
-
-        if stream:
-            current_display = display_agent_name(current_agent)
-            peer_display = display_agent_name(peer_agent)
-            print(f"\n[{current_display} -> {peer_display}]")
-            _safe_print(text)
-
-        current_agent = peer_agent
-
-    return {
+    result_payload = {
         "workspace": "Friends Bar",
         "user_request": user_request,
         "rounds": resolved_rounds,
         "turns": transcript,
+        "log": {
+            "run_id": audit_logger.run_id,
+            "log_file": str(audit_logger.log_file) if audit_logger.log_file else None,
+            "summary_file": (
+                str(audit_logger.summary_file) if audit_logger.summary_file else None
+            ),
+        },
     }
+    if stream and result_payload["log"]["log_file"]:
+        print(f"\n[system] 本次日志文件: {result_payload['log']['log_file']}")
+    return result_payload

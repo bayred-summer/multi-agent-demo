@@ -16,7 +16,7 @@ exec_mode = "safe"
 [providers.claude-minimax]
 timeout_level = "standard"
 retry_attempts = 1
-permission_mode = "default"
+permission_mode = "bypassPermissions"
 include_partial_messages = false
 print_stderr = false
 
@@ -25,6 +25,12 @@ print_stderr = false
 name = "Friends Bar"
 default_rounds = 4
 start_agent = "linabell"
+
+[friends_bar.logging]
+enabled = true
+dir = ".friends-bar/logs"
+include_prompt_preview = true
+max_preview_chars = 1200
 
 [friends_bar.agents.linabell]
 provider = "codex"
@@ -35,10 +41,10 @@ exec_mode = "bypass"
 
 [friends_bar.agents.duffy]
 provider = "claude-minimax"
-response_mode = "text_only"
+response_mode = "execute"
 
 [friends_bar.agents.duffy.provider_options]
-permission_mode = "default"
+permission_mode = "bypassPermissions"
 include_partial_messages = false
 print_stderr = false
 

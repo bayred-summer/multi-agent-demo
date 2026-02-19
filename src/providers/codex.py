@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -133,6 +134,7 @@ def invoke_codex(
     *,
     workdir: Optional[str] = None,
     exec_mode: str = "safe",
+    output_schema: Optional[Any] = None,
     timeout_level: str = "standard",
     idle_timeout_s: Optional[float] = None,
     max_timeout_s: Optional[float] = None,
@@ -158,6 +160,24 @@ def invoke_codex(
         if session_id
         else [*exec_prefix, *base_flags, prompt]
     )
+
+    schema_temp_file: Optional[str] = None
+    if output_schema is not None:
+        schema_path = ""
+        if isinstance(output_schema, str):
+            candidate = Path(output_schema)
+            if candidate.exists():
+                schema_path = str(candidate)
+            else:
+                schema_path = output_schema
+        else:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", encoding="utf-8", delete=False
+            ) as fp:
+                json.dump(output_schema, fp, ensure_ascii=False, indent=2)
+                schema_temp_file = fp.name
+                schema_path = schema_temp_file
+        args += ["--output-schema", schema_path]
 
     state: Dict[str, Any] = {
         "saw_delta": False,
@@ -194,27 +214,34 @@ def invoke_codex(
     )
 
     try:
-        result = run_stream_process(
-            provider="codex",
-            command=codex_command,
-            args=args,
-            workdir=workdir,
-            timeout=timeout,
-            stream_stderr=stream,
-            stderr_prefix="[codex stderr] ",
-            on_stdout_line=on_stdout_line,
-        )
-    except ProcessExecutionError as exc:
-        raise ProcessExecutionError(
-            provider=exc.provider,
-            reason=exc.reason,
-            command_repr=exc.command_repr,
-            elapsed_ms=exc.elapsed_ms,
-            return_code=exc.return_code,
-            stderr_lines=exc.stderr_lines,
-            session_id=state.get("thread_id"),
-            extra_message=exc.extra_message,
-        ) from exc
+        try:
+            result = run_stream_process(
+                provider="codex",
+                command=codex_command,
+                args=args,
+                workdir=workdir,
+                timeout=timeout,
+                stream_stderr=stream,
+                stderr_prefix="[codex stderr] ",
+                on_stdout_line=on_stdout_line,
+            )
+        except ProcessExecutionError as exc:
+            raise ProcessExecutionError(
+                provider=exc.provider,
+                reason=exc.reason,
+                command_repr=exc.command_repr,
+                elapsed_ms=exc.elapsed_ms,
+                return_code=exc.return_code,
+                stderr_lines=exc.stderr_lines,
+                session_id=state.get("thread_id"),
+                extra_message=exc.extra_message,
+            ) from exc
+    finally:
+        if schema_temp_file:
+            try:
+                Path(schema_temp_file).unlink(missing_ok=True)
+            except Exception:
+                pass
 
     if stream and state["printed_any"] and state["needs_newline"]:
         print("")

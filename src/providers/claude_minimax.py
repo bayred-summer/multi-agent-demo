@@ -60,46 +60,72 @@ def _extract_text_from_assistant_message(message: Any) -> str:
     return "".join(text_parts)
 
 
-def _extract_claude_text(event: Dict[str, Any], state: Dict[str, Any]) -> str:
-    """从单条 Claude stream-json 事件中提取可输出文本。"""
-    if not isinstance(event, dict):
+def _collapse_repeated_json_objects(text: str) -> str:
+    """Collapse concatenated duplicate JSON objects caused by mixed stream events."""
+    normalized = (text or "").strip()
+    if not normalized:
         return ""
 
-    if isinstance(event.get("session_id"), str):
-        state["session_id"] = event["session_id"]
+    decoder = json.JSONDecoder()
+    idx = 0
+    values: List[Any] = []
 
-    event_type = event.get("type")
+    while idx < len(normalized):
+        while idx < len(normalized) and normalized[idx].isspace():
+            idx += 1
+        if idx >= len(normalized):
+            break
+        try:
+            value, end = decoder.raw_decode(normalized, idx)
+        except json.JSONDecodeError:
+            return normalized
+        values.append(value)
+        idx = end
 
-    if event_type == "stream_event" and isinstance(event.get("event"), dict):
-        stream_event = event["event"]
-        if stream_event.get("type") == "content_block_delta":
-            delta = stream_event.get("delta")
-            if isinstance(delta, dict) and delta.get("type") == "text_delta":
-                text = delta.get("text")
-                if isinstance(text, str) and text:
-                    state["saw_text_delta"] = True
-                    return text
-        return ""
+    if not values:
+        return normalized
 
-    if event_type == "assistant":
-        if state["saw_text_delta"] or state["printed_fallback"]:
-            return ""
-        text = _extract_text_from_assistant_message(event.get("message"))
-        if text:
-            state["printed_fallback"] = True
-            return text
-        return ""
+    if len(values) == 1:
+        return normalized
 
-    if event_type == "result" and event.get("subtype") == "success":
-        if state["saw_text_delta"] or state["printed_fallback"]:
-            return ""
-        result_text = event.get("result")
-        if isinstance(result_text, str) and result_text:
-            state["printed_fallback"] = True
-            return result_text
-        return ""
+    first = values[0]
+    if all(item == first for item in values[1:]):
+        return json.dumps(first, ensure_ascii=False, separators=(",", ":"))
+    return normalized
 
-    return ""
+
+def _is_json_object(text: str) -> bool:
+    """Check whether text is one JSON object."""
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(parsed, dict)
+
+
+def _pick_final_text(state: Dict[str, Any]) -> str:
+    """Pick the most reliable final output across result/assistant/delta channels."""
+    delta_text = "".join(state.get("delta_parts", []))
+    candidates = [
+        state.get("result_text", ""),
+        state.get("assistant_text", ""),
+        delta_text,
+    ]
+
+    best_text = ""
+    best_score = (-1, -1)
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        current = _collapse_repeated_json_objects(candidate)
+        if not current:
+            continue
+        score = (1 if _is_json_object(current) else 0, len(current))
+        if score > best_score:
+            best_text = current
+            best_score = score
+
+    return best_text
 
 
 def invoke_claude_minimax(
@@ -111,6 +137,7 @@ def invoke_claude_minimax(
     permission_mode: Optional[str] = None,
     allowed_tools: Optional[List[str]] = None,
     disallowed_tools: Optional[List[str]] = None,
+    json_schema: Optional[Any] = None,
     include_partial_messages: bool = False,
     print_stderr: bool = False,
     timeout_level: str = "standard",
@@ -137,17 +164,23 @@ def invoke_claude_minimax(
         args += ["--allowedTools", ",".join(allowed_tools)]
     if disallowed_tools:
         args += ["--disallowedTools", ",".join(disallowed_tools)]
+    if json_schema is not None:
+        if isinstance(json_schema, str):
+            schema_arg = json_schema
+        else:
+            schema_arg = json.dumps(json_schema, ensure_ascii=False)
+        args += ["--json-schema", schema_arg]
     if session_id:
         args += ["-r", session_id]
     args += ["-p", prompt]
 
     state: Dict[str, Any] = {
         "session_id": session_id,
-        "saw_text_delta": False,
-        "printed_fallback": False,
+        "delta_parts": [],
+        "assistant_text": "",
+        "result_text": "",
         "printed_any": False,
         "needs_newline": False,
-        "output_parts": [],
     }
 
     def on_stdout_line(line: str) -> None:
@@ -159,15 +192,38 @@ def invoke_claude_minimax(
         except json.JSONDecodeError:
             return
 
-        text = _extract_claude_text(event, state)
-        if not text:
+        if isinstance(event.get("session_id"), str):
+            state["session_id"] = event["session_id"]
+
+        event_type = event.get("type")
+        if event_type == "stream_event" and isinstance(event.get("event"), dict):
+            stream_event = event["event"]
+            if stream_event.get("type") == "content_block_delta":
+                delta = stream_event.get("delta")
+                if isinstance(delta, dict) and delta.get("type") == "text_delta":
+                    text = delta.get("text")
+                    if isinstance(text, str) and text:
+                        state["delta_parts"].append(text)
+                        if stream:
+                            print(text, end="", flush=True)
+                            state["printed_any"] = True
+                            state["needs_newline"] = not text.endswith("\n")
             return
 
-        state["output_parts"].append(text)
-        if stream:
-            print(text, end="", flush=True)
-            state["printed_any"] = True
-            state["needs_newline"] = not text.endswith("\n")
+        if event_type == "assistant":
+            text = _extract_text_from_assistant_message(event.get("message"))
+            if not text and isinstance(event.get("message"), str):
+                text = event["message"]
+            if not text and isinstance(event.get("text"), str):
+                text = event["text"]
+            if text:
+                state["assistant_text"] = text
+            return
+
+        if event_type == "result" and event.get("subtype") == "success":
+            result_text = event.get("result")
+            if isinstance(result_text, str) and result_text:
+                state["result_text"] = result_text
 
     timeout = resolve_timeout_config(
         timeout_level=timeout_level,
@@ -203,9 +259,10 @@ def invoke_claude_minimax(
     if stream and state["printed_any"] and state["needs_newline"]:
         print("")
 
+    final_text = _pick_final_text(state)
     return {
         "provider": "claude-minimax",
-        "text": "".join(state["output_parts"]),
+        "text": final_text,
         "session_id": state.get("session_id"),
         "elapsed_ms": result.elapsed_ms,
     }
