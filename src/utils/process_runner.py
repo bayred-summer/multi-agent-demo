@@ -119,6 +119,27 @@ def resolve_timeout_config(
     )
 
 
+def _build_command_repr(
+    command: str,
+    args: List[str],
+    workdir: Optional[str],
+    *,
+    max_chars: int = 800,
+) -> str:
+    """Build compact command text for logs/errors.
+
+    Large prompts can make error logs unreadable and increase mojibake risk in
+    non-UTF-8 terminals, so we keep a bounded representation.
+    """
+    joined = " ".join([command, *args])
+    if len(joined) > max_chars:
+        overflow = len(joined) - max_chars
+        joined = f"{joined[:max_chars]} ...<truncated {overflow} chars>"
+    if workdir:
+        joined = f"{joined} (cwd={workdir})"
+    return joined
+
+
 def _drain_text_stream(
     stream,
     source: str,
@@ -164,9 +185,7 @@ def run_stream_process(
     on_stdout_line: Callable[[str], None],
 ) -> ProcessResult:
     """运行一个流式 CLI 子进程。"""
-    command_repr = " ".join([command, *args])
-    if workdir:
-        command_repr = f"{command_repr} (cwd={workdir})"
+    command_repr = _build_command_repr(command, args, workdir)
     start = time.monotonic()
     last_activity = start
     activity_lock = threading.Lock()

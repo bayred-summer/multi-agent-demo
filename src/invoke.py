@@ -1,6 +1,4 @@
-"""统一调用入口。
-对外暴露 `invoke(cli, prompt)`，屏蔽不同 provider 的实现差异。
-"""
+"""Unified invoke entry for CLI providers."""
 
 from __future__ import annotations
 
@@ -15,28 +13,30 @@ from src.utils.session_store import get_session_id, set_session_id
 
 ProviderFn = Callable[..., Dict[str, Any]]
 
-# 仅保留当前实现的两个 provider：codex 与 claude-minimax。
+# Implemented providers.
 PROVIDERS: Dict[str, ProviderFn] = {
     "codex": invoke_codex,
     "claude-minimax": invoke_claude_minimax,
 }
 
-# Friends Bar 对外命名：
-# - codex -> 玲娜贝儿
-# - claude-minimax -> 达菲
+# External aliases -> provider keys.
 CLI_ALIASES = {
     "claude_minimax": "claude-minimax",
+    "linabell": "codex",
+    "duffy": "claude-minimax",
     "玲娜贝儿": "codex",
     "达菲": "claude-minimax",
+    # Backward-compatible mojibake aliases.
+    "짎쳹괔랿": "codex",
+    "댄뷅": "claude-minimax",
 }
 
 SUPPORTED_CLIS = tuple(sorted(set(PROVIDERS.keys()) | set(CLI_ALIASES.keys())))
 
 
 def _normalize_cli(cli: str) -> str:
-    """把外部输入的 cli 名称标准化为内部规范 key。"""
+    """Normalize external CLI alias to provider key."""
     raw = (cli or "").strip()
-    # 先尝试原样匹配（兼容中文别名），再做小写匹配（兼容英文大小写）。
     if raw in CLI_ALIASES:
         return CLI_ALIASES[raw]
     lower_raw = raw.lower()
@@ -44,7 +44,7 @@ def _normalize_cli(cli: str) -> str:
 
 
 def _is_retryable_process_error(error: ProcessExecutionError) -> bool:
-    """判断异常是否适合自动重试。"""
+    """Return True if process error is likely transient."""
     if error.reason in {"idle_timeout", "max_timeout"}:
         return True
     if error.reason != "nonzero_exit":
@@ -81,13 +81,7 @@ def invoke(
     retry_backoff_s: Optional[float] = None,
     config_path: str = "config.toml",
 ) -> Dict[str, Any]:
-    """统一执行 provider 调用。
-
-    参数：
-    - timeout_level: quick / standard / complex
-    - idle_timeout_s / max_timeout_s / terminate_grace_s: 显式覆盖超时配置
-    - retry_attempts: 失败后最多重试次数（不含首次）
-    """
+    """Invoke one provider through a unified interface."""
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("prompt must be a non-empty string")
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from typing import Any, Dict, List, Optional
 
 from src.utils.process_runner import (
@@ -13,20 +14,32 @@ from src.utils.process_runner import (
 )
 
 
-def resolve_claude_command() -> str:
-    """解析最终要执行的 claude 命令路径。"""
+def resolve_claude_command() -> tuple[str, List[str]]:
+    """解析最终要执行的 Claude CLI 命令与前置参数。"""
     custom_bin = os.environ.get("CLAUDE_BIN")
     if custom_bin:
-        return custom_bin
+        return custom_bin, []
 
     if os.name == "nt":
         app_data = os.environ.get("APPDATA")
         if app_data:
+            claude_js = os.path.join(
+                app_data,
+                "npm",
+                "node_modules",
+                "@anthropic-ai",
+                "claude-code",
+                "cli.js",
+            )
+            # Windows 上优先直连 node + cli.js，避免 .cmd 包装导致长参数截断。
+            if os.path.exists(claude_js) and shutil.which("node"):
+                return "node", [claude_js]
+
             claude_cmd = os.path.join(app_data, "npm", "claude.cmd")
             if os.path.exists(claude_cmd):
-                return claude_cmd
+                return claude_cmd, []
 
-    return "claude"
+    return "claude", []
 
 
 def _extract_text_from_assistant_message(message: Any) -> str:
@@ -98,6 +111,8 @@ def invoke_claude_minimax(
     permission_mode: Optional[str] = None,
     allowed_tools: Optional[List[str]] = None,
     disallowed_tools: Optional[List[str]] = None,
+    include_partial_messages: bool = False,
+    print_stderr: bool = False,
     timeout_level: str = "standard",
     idle_timeout_s: Optional[float] = None,
     max_timeout_s: Optional[float] = None,
@@ -107,14 +122,15 @@ def invoke_claude_minimax(
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("prompt must be a non-empty string")
 
-    claude_command = resolve_claude_command()
+    claude_command, claude_prefix_args = resolve_claude_command()
     args = [
-        "-p",
+        *claude_prefix_args,
         "--output-format",
         "stream-json",
         "--verbose",
-        "--include-partial-messages",
     ]
+    if include_partial_messages:
+        args.append("--include-partial-messages")
     if permission_mode:
         args += ["--permission-mode", permission_mode]
     if allowed_tools:
@@ -123,7 +139,7 @@ def invoke_claude_minimax(
         args += ["--disallowedTools", ",".join(disallowed_tools)]
     if session_id:
         args += ["-r", session_id]
-    args.append(prompt)
+    args += ["-p", prompt]
 
     state: Dict[str, Any] = {
         "session_id": session_id,
@@ -167,7 +183,8 @@ def invoke_claude_minimax(
             args=args,
             workdir=workdir,
             timeout=timeout,
-            stream_stderr=stream,
+            # Default off to avoid mixed-channel mojibake in terminals.
+            stream_stderr=bool(print_stderr and stream),
             stderr_prefix="[claude stderr] ",
             on_stdout_line=on_stdout_line,
         )

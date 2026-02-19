@@ -141,3 +141,49 @@ permission_mode = "plan"
 
 - 设计文档：`docs/phase0-friends-bar.md`
 - 目标：先跑通两个 Agent 的协作链路，为后续 A2A 路由、MCP 回传、共享记忆做准备
+
+## 角色输出协议（Friends Bar）
+
+为保证玲娜贝儿与达菲可以稳定互调，当前回合输出采用固定区块协议。
+
+- 玲娜贝儿（开发实现 + 发布运维）必须输出区块：
+  - `[接收方]`
+  - `[任务理解]`
+  - `[实施清单]`
+  - `[执行证据]`
+  - `[风险与回滚]`
+  - `[给达菲的问题]`
+- 达菲（QA测试负责人 + 评审官）必须输出区块：
+  - `[接收方]`
+  - `[验收结论]`
+  - `[核验清单]`
+  - `[根因链]`
+  - `[问题清单]`
+  - `[回归门禁]`
+  - `[给玲娜贝儿的问题]`
+
+公共约束：
+
+- 第一行必须是：`发送给<对方>：路由确认`
+- 最后一行必须是：`发送给<对方>：<一个明确问题>`
+- 无证据结论一律标注为“未验证”
+- 禁止寒暄、禁止自我介绍、禁止元请求（例如“请授权”“请提供文件列表”）
+
+## Protocol IDs (Stable)
+
+To avoid terminal/codepage issues, internal agent IDs are ASCII-only:
+
+- `linabell` (display name: 玲娜贝儿)
+- `duffy` (display name: 达菲)
+
+You can still call `invoke()` and Friends Bar with provider names or Chinese names. They are normalized to canonical IDs.
+
+## 达菲职责（Code Review）
+
+达菲当前定位为资深 Code Reviewer（兼 QA 测试负责人），不是实现角色。
+
+- 核心目标：发现会导致功能错误、回归、安全或稳定性风险的问题
+- 输出要求：所有结论必须有证据（命令输出、日志、测试结果、文件定位）
+- 阻塞规则：P0/P1 问题未关闭时，结论必须为“不通过”或“有条件合入”
+- 建议要求：每条建议都要可执行，包含修复方向和回归验证方法
+- 非阻塞项：纯样式/偏好类建议不得作为阻塞理由

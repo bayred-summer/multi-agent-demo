@@ -1,4 +1,4 @@
-# 全局默认配置
+# Global defaults
 [defaults]
 provider = "codex"
 use_session = true
@@ -7,7 +7,7 @@ timeout_level = "standard"
 retry_attempts = 1
 retry_backoff_s = 1.0
 
-# provider 级默认值（可选）
+# Provider defaults
 [providers.codex]
 timeout_level = "standard"
 retry_attempts = 1
@@ -17,28 +17,32 @@ exec_mode = "safe"
 timeout_level = "standard"
 retry_attempts = 1
 permission_mode = "default"
+include_partial_messages = false
+print_stderr = false
 
-# Friends Bar（Phase0）双 Agent 配置
+# Friends Bar two-agent config
 [friends_bar]
 name = "Friends Bar"
 default_rounds = 4
-start_agent = "玲娜贝儿"
+start_agent = "linabell"
 
-[friends_bar.agents."玲娜贝儿"]
+[friends_bar.agents.linabell]
 provider = "codex"
 response_mode = "execute"
 
-[friends_bar.agents."玲娜贝儿".provider_options]
+[friends_bar.agents.linabell.provider_options]
 exec_mode = "bypass"
 
-[friends_bar.agents."达菲"]
+[friends_bar.agents.duffy]
 provider = "claude-minimax"
-response_mode = "execute"
+response_mode = "text_only"
 
-[friends_bar.agents."达菲".provider_options]
-permission_mode = "bypassPermissions"
+[friends_bar.agents.duffy.provider_options]
+permission_mode = "default"
+include_partial_messages = false
+print_stderr = false
 
-# 超时档位配置
+# Timeout profiles
 [timeouts.quick]
 idle_timeout_s = 60
 max_timeout_s = 300
