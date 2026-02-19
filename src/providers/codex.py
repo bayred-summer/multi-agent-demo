@@ -132,6 +132,7 @@ def invoke_codex(
     stream: bool = True,
     *,
     workdir: Optional[str] = None,
+    exec_mode: str = "safe",
     timeout_level: str = "standard",
     idle_timeout_s: Optional[float] = None,
     max_timeout_s: Optional[float] = None,
@@ -143,10 +144,19 @@ def invoke_codex(
 
     codex_command = resolve_codex_command()
     base_flags = ["--json", "--skip-git-repo-check"]
+    exec_prefix = ["exec"]
+    normalized_exec_mode = (exec_mode or "safe").strip().lower()
+    if normalized_exec_mode == "full_auto":
+        exec_prefix.append("--full-auto")
+    elif normalized_exec_mode == "bypass":
+        exec_prefix.append("--dangerously-bypass-approvals-and-sandbox")
+    elif normalized_exec_mode != "safe":
+        raise ValueError("exec_mode must be one of: safe, full_auto, bypass")
+
     args = (
-        ["exec", "resume", *base_flags, session_id, prompt]
+        [*exec_prefix, "resume", *base_flags, session_id, prompt]
         if session_id
-        else ["exec", *base_flags, prompt]
+        else [*exec_prefix, *base_flags, prompt]
     )
 
     state: Dict[str, Any] = {

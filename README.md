@@ -110,10 +110,12 @@ retry_backoff_s = 1.0
 [providers.codex]
 timeout_level = "standard"
 retry_attempts = 1
+exec_mode = "safe" # safe / full_auto / bypass
 
 [providers.claude-minimax]
 timeout_level = "standard"
 retry_attempts = 1
+permission_mode = "default" # default / plan / dontAsk / bypassPermissions
 
 [friends_bar]
 name = "Friends Bar"
@@ -122,9 +124,17 @@ start_agent = "玲娜贝儿"
 
 [friends_bar.agents."玲娜贝儿"]
 provider = "codex"
+response_mode = "execute" # execute / text_only
+
+[friends_bar.agents."玲娜贝儿".provider_options]
+exec_mode = "bypass"
 
 [friends_bar.agents."达菲"]
 provider = "claude-minimax"
+response_mode = "text_only"
+
+[friends_bar.agents."达菲".provider_options]
+permission_mode = "plan"
 ```
 
 ## Phase0 说明

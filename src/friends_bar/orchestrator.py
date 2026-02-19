@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from typing import Any, Dict, List, Optional
 
 from src.friends_bar.agents import AGENTS, normalize_agent_name
@@ -18,6 +19,18 @@ def _next_agent(current_name: str) -> str:
     if current_name == AGENT_TURN_ORDER[0]:
         return AGENT_TURN_ORDER[1]
     return AGENT_TURN_ORDER[0]
+
+
+def _safe_print(text: str) -> None:
+    """在 Windows 非 UTF-8 控制台下安全打印文本。"""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or "utf-8"
+        safe_text = text.encode(encoding, errors="replace").decode(
+            encoding, errors="replace"
+        )
+        print(safe_text)
 
 
 def _format_history(transcript: List[Dict[str, Any]]) -> str:
@@ -58,6 +71,7 @@ def _build_turn_prompt(
     current_agent: str,
     peer_agent: str,
     workdir: str,
+    response_mode: str,
     transcript: List[Dict[str, Any]],
     extra_instruction: Optional[str] = None,
 ) -> str:
@@ -69,15 +83,27 @@ def _build_turn_prompt(
         f"对方刚才的问题：{peer_question}\n\n" if peer_question else ""
     )
     extra_text = f"\n{extra_instruction}\n" if extra_instruction else ""
+    mode = (response_mode or "text_only").strip().lower()
+    if mode == "execute":
+        mode_instruction = (
+            "当前为执行模式：你可以调用工具并在参考目录直接创建/修改文件，"
+            "不要请求授权，不要停留在计划层。"
+        )
+    else:
+        mode_instruction = (
+            "当前为对话模式：只能输出文本，禁止调用工具、命令执行、文件读写、权限申请。"
+            "即使任务要求创建/修改文件，也只能给出你将如何实现的步骤与关键实现点。"
+        )
     return (
         f"任务目标：{user_request}\n\n"
-        f"执行目录：{workdir}\n"
-        f"你已在该目录中执行任务，可直接读写文件，不要请求访问权限。\n\n"
+        f"参考目录：{workdir}\n"
+        f"{mode_instruction}\n\n"
         f"当前协作历史：\n{history_text}\n\n"
         f"{peer_question_text}"
         f"你是“{current_agent}”，职责：{mission}\n"
         f"请直接围绕任务作答，禁止解释系统/角色/脚本/运行方式。\n"
-        f"禁止输出“无法访问目录”“请授权”“请先提供文件列表”等请求。\n"
+        f"禁止输出“我来查看目录”“请授权”“请先提供文件列表”等元操作请求。\n"
+        f"禁止反问“你需要什么帮助/请提供需求”；必须基于当前任务目标直接给出可执行建议。\n"
         f"不要问好，不要寒暄，不要自我介绍。\n\n"
         f"输出要求：\n"
         f"1) 第一行必须以“发送给{peer_agent}：”开头，说明这条消息的接收方；\n"
@@ -87,6 +113,42 @@ def _build_turn_prompt(
         f"5) 控制在 6 句话以内。\n"
         f"{extra_text}"
     )
+
+
+def _resolve_agent_runtime(
+    *,
+    runtime_config: Dict[str, Any],
+    agent_name: str,
+) -> Dict[str, Any]:
+    """合并 provider 默认策略与 agent 覆盖策略。"""
+    provider_name = AGENTS[agent_name].provider
+    providers_cfg = runtime_config.get("providers", {})
+    provider_defaults = (
+        providers_cfg.get(provider_name, {}) if isinstance(providers_cfg, dict) else {}
+    )
+
+    provider_options: Dict[str, Any] = {}
+    if provider_name == "codex":
+        provider_options["exec_mode"] = str(provider_defaults.get("exec_mode", "safe"))
+    elif provider_name == "claude-minimax":
+        provider_options["permission_mode"] = str(
+            provider_defaults.get("permission_mode", "default")
+        )
+
+    friends_bar = runtime_config.get("friends_bar", {})
+    agents_cfg = friends_bar.get("agents", {}) if isinstance(friends_bar, dict) else {}
+    agent_cfg = agents_cfg.get(agent_name, {}) if isinstance(agents_cfg, dict) else {}
+    response_mode = "text_only"
+    if isinstance(agent_cfg, dict):
+        response_mode = str(agent_cfg.get("response_mode", "text_only"))
+        agent_provider_opts = agent_cfg.get("provider_options", {})
+        if isinstance(agent_provider_opts, dict):
+            provider_options.update(agent_provider_opts)
+
+    return {
+        "response_mode": response_mode,
+        "provider_options": provider_options,
+    }
 
 
 def run_two_agent_dialogue(
@@ -141,11 +203,16 @@ def run_two_agent_dialogue(
 
     for turn in range(1, resolved_rounds + 1):
         peer_agent = _next_agent(current_agent)
+        runtime_info = _resolve_agent_runtime(
+            runtime_config=runtime_config,
+            agent_name=current_agent,
+        )
         adjusted_prompt = _build_turn_prompt(
             user_request=user_request,
             current_agent=current_agent,
             peer_agent=peer_agent,
             workdir=resolved_workdir,
+            response_mode=runtime_info["response_mode"],
             transcript=transcript,
         )
         result = invoke(
@@ -154,6 +221,7 @@ def run_two_agent_dialogue(
             use_session=use_session,
             stream=False,
             workdir=resolved_workdir,
+            provider_options=runtime_info["provider_options"],
             timeout_level=timeout_level,
         )
 
@@ -173,7 +241,7 @@ def run_two_agent_dialogue(
 
         if stream:
             print(f"\n[{current_agent} -> {peer_agent}]")
-            print(text)
+            _safe_print(text)
 
         current_agent = peer_agent
 

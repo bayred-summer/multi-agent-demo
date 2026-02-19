@@ -22,16 +22,32 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "retry_backoff_s": 1.0,
     },
     "providers": {
-        "codex": {"timeout_level": "standard", "retry_attempts": 1},
-        "claude-minimax": {"timeout_level": "standard", "retry_attempts": 1},
+        "codex": {
+            "timeout_level": "standard",
+            "retry_attempts": 1,
+            "exec_mode": "safe",
+        },
+        "claude-minimax": {
+            "timeout_level": "standard",
+            "retry_attempts": 1,
+            "permission_mode": "default",
+        },
     },
     "friends_bar": {
         "name": "Friends Bar",
         "default_rounds": 4,
         "start_agent": "玲娜贝儿",
         "agents": {
-            "玲娜贝儿": {"provider": "codex"},
-            "达菲": {"provider": "claude-minimax"},
+            "玲娜贝儿": {
+                "provider": "codex",
+                "response_mode": "execute",
+                "provider_options": {"exec_mode": "bypass"},
+            },
+            "达菲": {
+                "provider": "claude-minimax",
+                "response_mode": "text_only",
+                "provider_options": {"permission_mode": "plan"},
+            },
         },
     },
     "timeouts": {
@@ -73,9 +89,29 @@ def _normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
     defaults["retry_attempts"] = int(defaults.get("retry_attempts", 1))
     defaults["retry_backoff_s"] = float(defaults.get("retry_backoff_s", 1.0))
 
+    providers = normalized.get("providers", {})
+    if isinstance(providers, dict):
+        codex_cfg = providers.get("codex", {})
+        if isinstance(codex_cfg, dict):
+            codex_cfg["exec_mode"] = str(codex_cfg.get("exec_mode", "safe"))
+        claude_cfg = providers.get("claude-minimax", {})
+        if isinstance(claude_cfg, dict):
+            claude_cfg["permission_mode"] = str(
+                claude_cfg.get("permission_mode", "default")
+            )
+
     friends_bar = normalized.get("friends_bar", {})
     if isinstance(friends_bar, dict):
         friends_bar["default_rounds"] = int(friends_bar.get("default_rounds", 4))
+        agents = friends_bar.get("agents", {})
+        if isinstance(agents, dict):
+            for _, agent in agents.items():
+                if not isinstance(agent, dict):
+                    continue
+                agent["response_mode"] = str(agent.get("response_mode", "text_only"))
+                provider_options = agent.get("provider_options", {})
+                if not isinstance(provider_options, dict):
+                    agent["provider_options"] = {}
 
     for profile_name, profile in normalized.get("timeouts", {}).items():
         if not isinstance(profile, dict):

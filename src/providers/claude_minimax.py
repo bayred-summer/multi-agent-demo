@@ -95,6 +95,9 @@ def invoke_claude_minimax(
     stream: bool = True,
     *,
     workdir: Optional[str] = None,
+    permission_mode: Optional[str] = None,
+    allowed_tools: Optional[List[str]] = None,
+    disallowed_tools: Optional[List[str]] = None,
     timeout_level: str = "standard",
     idle_timeout_s: Optional[float] = None,
     max_timeout_s: Optional[float] = None,
@@ -112,6 +115,12 @@ def invoke_claude_minimax(
         "--verbose",
         "--include-partial-messages",
     ]
+    if permission_mode:
+        args += ["--permission-mode", permission_mode]
+    if allowed_tools:
+        args += ["--allowedTools", ",".join(allowed_tools)]
+    if disallowed_tools:
+        args += ["--disallowedTools", ",".join(disallowed_tools)]
     if session_id:
         args += ["-r", session_id]
     args.append(prompt)
