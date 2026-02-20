@@ -103,6 +103,32 @@ def _is_json_object(text: str) -> bool:
     return isinstance(parsed, dict)
 
 
+def _extract_structured_output(payload: Any) -> Optional[str]:
+    """Extract structured_output field from Claude JSON output."""
+    if not isinstance(payload, dict):
+        return None
+
+    structured = payload.get("structured_output")
+    if structured is None:
+        structured = payload.get("structuredOutput")
+    if structured is None and isinstance(payload.get("message"), dict):
+        structured = payload["message"].get("structured_output")
+    if structured is None:
+        return None
+
+    if isinstance(structured, str):
+        try:
+            parsed = json.loads(structured)
+        except json.JSONDecodeError:
+            return structured.strip()
+        return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+
+    if isinstance(structured, (dict, list)):
+        return json.dumps(structured, ensure_ascii=False, separators=(",", ":"))
+
+    return None
+
+
 def _pick_final_text(state: Dict[str, Any]) -> str:
     """Pick the most reliable final output across result/assistant/delta channels."""
     delta_text = "".join(state.get("delta_parts", []))
@@ -151,12 +177,17 @@ def invoke_claude_minimax(
         raise ValueError("prompt must be a non-empty string")
 
     claude_command, claude_prefix_args = resolve_claude_command()
+    output_format = "stream-json"
+    if json_schema is not None and not stream:
+        output_format = "json"
+
     args = [
         *claude_prefix_args,
         "--output-format",
-        "stream-json",
-        "--verbose",
+        output_format,
     ]
+    if output_format == "stream-json":
+        args.append("--verbose")
     if include_partial_messages:
         args.append("--include-partial-messages")
     if permission_mode:
@@ -188,9 +219,30 @@ def invoke_claude_minimax(
         "result_text": "",
         "printed_any": False,
         "needs_newline": False,
+        "json_buffer": [],
     }
 
     def on_stdout_line(line: str) -> None:
+        if output_format == "json":
+            state["json_buffer"].append(line)
+            raw = "\n".join(state["json_buffer"]).strip()
+            if not raw:
+                return
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                return
+
+            structured = _extract_structured_output(payload)
+            if structured:
+                state["result_text"] = structured
+                return
+            if isinstance(payload, dict):
+                state["result_text"] = json.dumps(
+                    payload, ensure_ascii=False, separators=(",", ":")
+                )
+            return
+
         trimmed = line.strip()
         if not trimmed:
             return

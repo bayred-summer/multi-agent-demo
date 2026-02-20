@@ -6,6 +6,7 @@ import unittest
 
 from src.providers.claude_minimax import (
     _collapse_repeated_json_objects,
+    _extract_structured_output,
     _pick_final_text,
 )
 from src.providers.codex import _extract_assistant_text
@@ -50,6 +51,18 @@ class TestProviderParsing(unittest.TestCase):
         }
         text = _pick_final_text(state)
         self.assertEqual(text, '{"schema_version":"friendsbar.delivery.v1","status":"ok"}')
+
+    def test_claude_extracts_structured_output(self) -> None:
+        payload = {
+            "structured_output": {
+                "schema_version": "friendsbar.review.v1",
+                "status": "ok",
+            }
+        }
+        text = _extract_structured_output(payload)
+        self.assertEqual(
+            text, '{"schema_version":"friendsbar.review.v1","status":"ok"}'
+        )
 
 
 if __name__ == "__main__":
