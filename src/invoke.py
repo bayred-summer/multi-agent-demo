@@ -79,6 +79,9 @@ def invoke(
     terminate_grace_s: Optional[float] = None,
     retry_attempts: Optional[int] = None,
     retry_backoff_s: Optional[float] = None,
+    run_id: Optional[str] = None,
+    seed: Optional[int] = None,
+    dry_run: bool = False,
     config_path: str = "config.toml",
 ) -> Dict[str, Any]:
     """Invoke one provider through a unified interface."""
@@ -136,6 +139,21 @@ def invoke(
     if int(resolved_retry_attempts) < 0:
         raise ValueError("retry_attempts must be >= 0")
 
+    if dry_run:
+        return {
+            "cli": provider_name,
+            "prompt": prompt,
+            "text": "",
+            "session_id": None,
+            "elapsed_ms": 0,
+            "timeout_level": resolved_timeout_level,
+            "retry_count": 0,
+            "dry_run": True,
+            "run_id": run_id,
+            "seed": seed,
+            "provider_options": provider_options or {},
+        }
+
     last_session_id = get_session_id(provider_name) if resolved_use_session else None
 
     attempt = 0
@@ -178,4 +196,6 @@ def invoke(
         "elapsed_ms": result.get("elapsed_ms"),
         "timeout_level": resolved_timeout_level,
         "retry_count": attempt_count,
+        "run_id": run_id,
+        "seed": seed,
     }

@@ -48,11 +48,13 @@ class TestAuditLog(unittest.TestCase):
             self.assertEqual(lines[0]["event"], "run.started")
             self.assertEqual(lines[1]["event"], "turn.completed")
             self.assertEqual(lines[-1]["event"], "run.finalized")
+            self.assertIn("seed", lines[0])
 
             summary = json.loads(logger.summary_file.read_text(encoding="utf-8"))
             self.assertEqual(summary["status"], "success")
             self.assertEqual(summary["turns_completed"], 1)
             self.assertEqual(summary["run_id"], logger.run_id)
+            self.assertEqual(summary["seed"], logger.seed)
 
 
 if __name__ == "__main__":

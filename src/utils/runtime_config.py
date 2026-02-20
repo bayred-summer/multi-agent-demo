@@ -45,7 +45,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "timeout_level": "standard",
             "retry_attempts": 1,
             "permission_mode": "bypassPermissions",
-            "include_partial_messages": True,
+            "include_partial_messages": False,
             "print_stderr": False,
         },
     },
@@ -58,6 +58,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "dir": ".friends-bar/logs",
             "include_prompt_preview": True,
             "max_preview_chars": 1200,
+        },
+        "safety": {
+            "read_only": False,
+            "allowed_roots": [],
+            "command_allowlist": [],
+            "command_denylist": [],
+            "codex_sandbox_read_only": "read-only",
+            "codex_sandbox_default": "workspace-write",
+            "claude_tools_read_only": "Read",
         },
         "agents": {
             LINA_BELL: {
@@ -162,7 +171,7 @@ def _normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
                 claude_cfg.get("permission_mode", "bypassPermissions")
             )
             claude_cfg["include_partial_messages"] = bool(
-                claude_cfg.get("include_partial_messages", True)
+                claude_cfg.get("include_partial_messages", False)
             )
             claude_cfg["print_stderr"] = bool(claude_cfg.get("print_stderr", False))
 
@@ -185,6 +194,30 @@ def _normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
         except (TypeError, ValueError):
             logging_cfg["max_preview_chars"] = 1200
         friends_bar["logging"] = logging_cfg
+
+        safety_cfg = friends_bar.get("safety", {})
+        if not isinstance(safety_cfg, dict):
+            safety_cfg = {}
+        safety_cfg["read_only"] = bool(safety_cfg.get("read_only", False))
+        safety_cfg["allowed_roots"] = [
+            str(item) for item in safety_cfg.get("allowed_roots", []) if item
+        ]
+        safety_cfg["command_allowlist"] = [
+            str(item) for item in safety_cfg.get("command_allowlist", []) if item
+        ]
+        safety_cfg["command_denylist"] = [
+            str(item) for item in safety_cfg.get("command_denylist", []) if item
+        ]
+        safety_cfg["codex_sandbox_read_only"] = str(
+            safety_cfg.get("codex_sandbox_read_only", "read-only")
+        )
+        safety_cfg["codex_sandbox_default"] = str(
+            safety_cfg.get("codex_sandbox_default", "workspace-write")
+        )
+        safety_cfg["claude_tools_read_only"] = str(
+            safety_cfg.get("claude_tools_read_only", "Read")
+        )
+        friends_bar["safety"] = safety_cfg
 
         start_agent = str(friends_bar.get("start_agent", LINA_BELL))
         if normalize_agent_name is None:

@@ -134,6 +134,7 @@ def invoke_codex(
     *,
     workdir: Optional[str] = None,
     exec_mode: str = "safe",
+    sandbox_mode: Optional[str] = None,
     output_schema: Optional[Any] = None,
     timeout_level: str = "standard",
     idle_timeout_s: Optional[float] = None,
@@ -160,6 +161,8 @@ def invoke_codex(
         if session_id
         else [*exec_prefix, *base_flags, prompt]
     )
+    if sandbox_mode:
+        args += ["--sandbox", str(sandbox_mode)]
 
     schema_temp_file: Optional[str] = None
     if output_schema is not None:

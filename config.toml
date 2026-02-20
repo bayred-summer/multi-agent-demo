@@ -26,6 +26,15 @@ name = "Friends Bar"
 default_rounds = 4
 start_agent = "linabell"
 
+[friends_bar.safety]
+read_only = false
+allowed_roots = []
+command_allowlist = []
+command_denylist = []
+codex_sandbox_read_only = "read-only"
+codex_sandbox_default = "workspace-write"
+claude_tools_read_only = "Read"
+
 [friends_bar.logging]
 enabled = true
 dir = ".friends-bar/logs"

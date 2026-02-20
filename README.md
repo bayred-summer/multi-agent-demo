@@ -58,6 +58,12 @@ python minimal-claude-minimax.py "你好，请用一句话介绍自己"
 python friends-bar-demo.py "请你们一起给出一个 ToDo App 的最小上线方案" --rounds 4
 ```
 
+仅生成 prompt/schema（不调用 CLI）：
+
+```bash
+python friends-bar-demo.py "最小演示" --rounds 1 --start-agent linabell --dry-run --dump-prompt
+```
+
 让 agent 直接在目标项目目录执行任务：
 
 ```bash
@@ -126,6 +132,15 @@ enabled = true
 dir = ".friends-bar/logs"
 include_prompt_preview = true
 max_preview_chars = 1200
+
+[friends_bar.safety]
+read_only = false
+allowed_roots = []
+command_allowlist = []
+command_denylist = []
+codex_sandbox_read_only = "read-only"
+codex_sandbox_default = "workspace-write"
+claude_tools_read_only = "Read"
 
 [friends_bar]
 name = "Friends Bar"

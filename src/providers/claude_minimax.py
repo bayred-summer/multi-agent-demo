@@ -137,6 +137,7 @@ def invoke_claude_minimax(
     permission_mode: Optional[str] = None,
     allowed_tools: Optional[List[str]] = None,
     disallowed_tools: Optional[List[str]] = None,
+    tools: Optional[str | List[str]] = None,
     json_schema: Optional[Any] = None,
     include_partial_messages: bool = False,
     print_stderr: bool = False,
@@ -160,6 +161,12 @@ def invoke_claude_minimax(
         args.append("--include-partial-messages")
     if permission_mode:
         args += ["--permission-mode", permission_mode]
+    if tools is not None:
+        if isinstance(tools, list):
+            tool_arg = ",".join(tools)
+        else:
+            tool_arg = str(tools)
+        args += ["--tools", tool_arg]
     if allowed_tools:
         args += ["--allowedTools", ",".join(allowed_tools)]
     if disallowed_tools:

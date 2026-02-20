@@ -21,6 +21,9 @@ def _fake_invoke(
     workdir: str | None = None,
     provider_options: dict | None = None,
     timeout_level: str | None = None,
+    run_id: str | None = None,
+    seed: int | None = None,
+    dry_run: bool = False,
     config_path: str = "config.toml",
 ):
     """Deterministic invoke stub for two turns using strict JSON protocol."""
@@ -48,6 +51,8 @@ def _fake_invoke(
             "text": text,
             "session_id": "session-linabell",
             "elapsed_ms": 10,
+            "run_id": run_id,
+            "seed": seed,
         }
 
     text = json.dumps(
@@ -73,6 +78,8 @@ def _fake_invoke(
         "text": text,
         "session_id": "session-duffy",
         "elapsed_ms": 11,
+        "run_id": run_id,
+        "seed": seed,
     }
 
 
@@ -129,6 +136,7 @@ class TestOrchestratorAuditLogging(unittest.TestCase):
             ]
             run_started = next(item for item in events if item["event"] == "run.started")
             self.assertEqual(run_started["payload"]["user_request"], "请检查最小任务")
+            self.assertIn("seed", run_started)
 
             turn_completed = [item for item in events if item["event"] == "turn.completed"]
             self.assertEqual(len(turn_completed), 2)

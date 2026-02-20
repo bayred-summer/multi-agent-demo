@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -66,11 +67,18 @@ class AuditLogConfig:
 class AuditLogger:
     """Append-only JSONL logger for one Friends Bar run."""
 
-    def __init__(self, config: AuditLogConfig) -> None:
+    def __init__(self, config: AuditLogConfig, *, seed: Optional[int] = None) -> None:
         self._enabled = bool(config.enabled)
         self._include_prompt_preview = bool(config.include_prompt_preview)
         self._max_preview_chars = _safe_int(config.max_preview_chars, 1200)
         self.run_id = uuid.uuid4().hex
+        if seed is None:
+            self.seed = secrets.randbits(32)
+        else:
+            try:
+                self.seed = int(seed)
+            except (TypeError, ValueError):
+                self.seed = secrets.randbits(32)
         self._created_at = _utc_now_iso()
         self.log_file: Optional[Path] = None
         self.summary_file: Optional[Path] = None
@@ -120,6 +128,7 @@ class AuditLogger:
         record = {
             "ts": _utc_now_iso(),
             "run_id": self.run_id,
+            "seed": self.seed,
             "event": event,
             "payload": payload,
         }
@@ -134,6 +143,7 @@ class AuditLogger:
             "status": status,
             "started_at": self._created_at,
             "ended_at": _utc_now_iso(),
+            "seed": self.seed,
             **summary,
         }
         self.log("run.finalized", payload)
@@ -145,6 +155,7 @@ class AuditLogger:
                 json.dumps(
                     {
                         "run_id": self.run_id,
+                        "seed": self.seed,
                         **payload,
                     },
                     ensure_ascii=False,

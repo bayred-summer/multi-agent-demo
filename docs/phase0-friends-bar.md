@@ -41,6 +41,8 @@ docs/phase0-friends-bar.md
 
 - 终端演示入口
 - 支持 `--rounds`、`--start-agent`、`--use-session`、`--timeout-level`
+- 支持 `--dry-run` 与 `--dump-prompt`（仅生成 prompt/schema，不调用 CLI）
+- 支持 `--seed`（固定一次运行的随机种子）
 
 ## 4. 事件/状态模型（Phase0 简化版）
 
@@ -78,6 +80,7 @@ Phase0 仅使用其中基础字段，后续可扩展：
 - 每个 Agent 的独立超时策略
 - 每个 Agent 的系统提示模板
 - 每个 Agent 的成本与配额限制
+- `friends_bar.safety`：只读模式、工作目录白名单、命令 allow/deny
 
 ## 6. 下一阶段接口预留
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from pathlib import Path
 import sys
 import time
@@ -36,6 +38,102 @@ def _next_agent(current_name: str) -> str:
     if current_name == AGENT_TURN_ORDER[0]:
         return AGENT_TURN_ORDER[1]
     return AGENT_TURN_ORDER[0]
+
+
+def _path_within(child: Path, parent: Path) -> bool:
+    """Return True if child is within parent (resolved)."""
+    try:
+        child_resolved = child.resolve()
+        parent_resolved = parent.resolve()
+    except OSError:
+        return False
+    try:
+        return child_resolved.is_relative_to(parent_resolved)
+    except AttributeError:  # py<3.9
+        return str(child_resolved).startswith(str(parent_resolved))
+
+
+def _ensure_allowed_roots(project_path: str, allowed_roots: List[str]) -> None:
+    """Ensure project_path stays within configured allowed roots."""
+    if not allowed_roots:
+        return
+    project = Path(project_path)
+    for root in allowed_roots:
+        if not root:
+            continue
+        if _path_within(project, Path(root)):
+            return
+    raise ValueError(f"project_path is خارج允许根目录列表: {project_path}")
+
+
+def _collect_commands(protocol_content: Dict[str, Any], agent_name: str) -> List[str]:
+    """Collect command strings from structured protocol output."""
+    commands: List[str] = []
+    if agent_name == DUFFY:
+        verification = protocol_content.get("verification", [])
+        if isinstance(verification, list):
+            for item in verification:
+                if isinstance(item, dict) and isinstance(item.get("command"), str):
+                    commands.append(item["command"])
+        return commands
+
+    result = protocol_content.get("result", {})
+    if isinstance(result, dict):
+        evidence = result.get("execution_evidence", [])
+        if isinstance(evidence, list):
+            for item in evidence:
+                if isinstance(item, dict) and isinstance(item.get("command"), str):
+                    commands.append(item["command"])
+    return commands
+
+
+def _command_policy_errors(
+    commands: List[str],
+    *,
+    allowlist: List[str],
+    denylist: List[str],
+) -> List[str]:
+    """Validate command strings against allow/deny lists."""
+    errors: List[str] = []
+    allow_patterns = [re.compile(pat) for pat in allowlist if pat]
+    deny_patterns = [re.compile(pat) for pat in denylist if pat]
+
+    for cmd in commands:
+        if any(pat.search(cmd) for pat in deny_patterns):
+            errors.append(f"E_SAFETY_COMMAND_DENIED: {cmd}")
+            continue
+        if allow_patterns and not any(pat.search(cmd) for pat in allow_patterns):
+            errors.append(f"E_SAFETY_COMMAND_NOT_ALLOWED: {cmd}")
+    return errors
+
+
+def _dump_prompt(
+    *,
+    prompt: str,
+    dump_target: Optional[str],
+    run_id: str,
+    turn: int,
+    agent: str,
+) -> Optional[str]:
+    """Dump prompt to stdout or file; return path if written."""
+    if not dump_target:
+        return None
+    if dump_target in {"-", "stdout"}:
+        print("\n[dump] prompt\n")
+        print(prompt)
+        return None
+
+    target_path = Path(dump_target)
+    if target_path.exists() and target_path.is_dir():
+        file_path = target_path / f"prompt_{run_id}_turn{turn}_{agent}.txt"
+    else:
+        file_path = target_path
+        if file_path.suffix == "":
+            file_path = file_path / f"prompt_{run_id}_turn{turn}_{agent}.txt"
+
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(prompt, encoding="utf-8")
+    return str(file_path)
 
 
 def _validate_agent_output(
@@ -159,6 +257,7 @@ def _build_turn_prompt(
     response_mode: str,
     transcript: List[Dict[str, Any]],
     extra_instruction: Optional[str] = None,
+    read_only: bool = False,
 ) -> str:
     """Build one turn prompt for current agent."""
     mission = AGENTS[current_agent].mission
@@ -202,6 +301,10 @@ def _build_turn_prompt(
             "禁止基于口头描述做评审，禁止执行实现或要求额外授权。"
         )
 
+    safety_note = ""
+    if read_only:
+        safety_note = "安全约束：只允许只读操作，禁止写入/删除/修改文件。\n"
+
     return (
         f"任务目标：{turn_task_goal}\n"
         f"原始用户需求：{user_request}\n\n"
@@ -221,6 +324,7 @@ def _build_turn_prompt(
         "4) 第一字符必须是 {，最后字符必须是 }\n"
         "5) 禁止输出任何 JSON 之外字符（包括“我将先...”“```json”）\n"
         f"{role_guard}\n"
+        f"{safety_note}"
         "不要问好，不要寒暄，不要自我介绍，不要输出 JSON 之外的任何文本。\n\n"
         f"输出协议：\n{output_contract}\n"
         f"当前轮次接收方：{peer_display}\n"
@@ -232,6 +336,7 @@ def _resolve_agent_runtime(
     *,
     runtime_config: Dict[str, Any],
     agent_name: str,
+    safety_cfg: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Merge provider defaults with per-agent overrides."""
     provider_name = AGENTS[agent_name].provider
@@ -253,6 +358,8 @@ def _resolve_agent_runtime(
         provider_options["print_stderr"] = bool(
             provider_defaults.get("print_stderr", False)
         )
+        if "tools" in provider_defaults:
+            provider_options["tools"] = provider_defaults.get("tools")
 
     friends_bar = runtime_config.get("friends_bar", {})
     agents_cfg = friends_bar.get("agents", {}) if isinstance(friends_bar, dict) else {}
@@ -293,6 +400,24 @@ def _resolve_agent_runtime(
         }:
             provider_options["permission_mode"] = "bypassPermissions"
 
+    if safety_cfg.get("read_only"):
+        if provider_name == "codex":
+            provider_options["exec_mode"] = "safe"
+            provider_options["sandbox_mode"] = safety_cfg.get(
+                "codex_sandbox_read_only", "read-only"
+            )
+        elif provider_name == "claude-minimax":
+            provider_options["tools"] = safety_cfg.get(
+                "claude_tools_read_only", "Read"
+            )
+            if "disallowed_tools" not in provider_options:
+                provider_options["disallowed_tools"] = ["Bash", "Edit"]
+    else:
+        if provider_name == "codex" and "sandbox_mode" not in provider_options:
+            provider_options["sandbox_mode"] = safety_cfg.get(
+                "codex_sandbox_default", "workspace-write"
+            )
+
     return {
         "response_mode": response_mode,
         "provider_options": provider_options,
@@ -309,6 +434,9 @@ def run_two_agent_dialogue(
     stream: bool = True,
     timeout_level: Optional[str] = "standard",
     config_path: str = "config.toml",
+    seed: Optional[int] = None,
+    dry_run: bool = False,
+    dump_prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run Friends Bar two-agent dialogue loop."""
     if not isinstance(user_request, str) or not user_request.strip():
@@ -318,7 +446,14 @@ def run_two_agent_dialogue(
     friends_bar_config = runtime_config.get("friends_bar", {})
     if not isinstance(friends_bar_config, dict):
         friends_bar_config = {}
-    audit_logger = AuditLogger(AuditLogConfig.from_runtime_config(friends_bar_config))
+    safety_cfg = friends_bar_config.get("safety", {})
+    if not isinstance(safety_cfg, dict):
+        safety_cfg = {}
+
+    audit_logger = AuditLogger(
+        AuditLogConfig.from_runtime_config(friends_bar_config),
+        seed=seed,
+    )
     run_started = time.monotonic()
 
     resolved_rounds = (
@@ -340,10 +475,13 @@ def run_two_agent_dialogue(
         raise ValueError(f"project_path does not exist: {resolved_workdir}")
     if not Path(resolved_workdir).is_dir():
         raise ValueError(f"project_path is not a directory: {resolved_workdir}")
+    _ensure_allowed_roots(resolved_workdir, safety_cfg.get("allowed_roots", []))
 
     current_agent = normalize_agent_name(resolved_start_agent)
     transcript: List[Dict[str, Any]] = []
     run_error: Optional[Dict[str, Any]] = None
+    dry_run_payload: Optional[Dict[str, Any]] = None
+    dry_run_triggered = False
 
     audit_logger.log(
         "run.started",
@@ -387,6 +525,7 @@ def run_two_agent_dialogue(
             runtime_info = _resolve_agent_runtime(
                 runtime_config=runtime_config,
                 agent_name=current_agent,
+                safety_cfg=safety_cfg,
             )
 
             audit_logger.log(
@@ -429,7 +568,50 @@ def run_two_agent_dialogue(
                     response_mode=runtime_info["response_mode"],
                     transcript=transcript,
                     extra_instruction=extra_instruction,
+                    read_only=bool(safety_cfg.get("read_only", False)),
                 )
+                dump_path = _dump_prompt(
+                    prompt=adjusted_prompt,
+                    dump_target=dump_prompt,
+                    run_id=audit_logger.run_id,
+                    turn=turn,
+                    agent=current_agent,
+                )
+                if dump_path or dump_prompt:
+                    audit_logger.log(
+                        "prompt.dump",
+                        {
+                            "turn": turn,
+                            "agent": current_agent,
+                            "path": dump_path,
+                            "prompt_meta": text_meta(
+                                adjusted_prompt,
+                                include_preview=audit_logger.include_prompt_preview,
+                                max_preview_chars=audit_logger.max_preview_chars,
+                            ),
+                        },
+                    )
+                if dry_run:
+                    audit_logger.log(
+                        "run.dry_run",
+                        {
+                            "turn": turn,
+                            "agent": current_agent,
+                            "schema": build_agent_output_schema(current_agent),
+                        },
+                    )
+                    dry_run_payload = {
+                        "workspace": "Friends Bar",
+                        "user_request": user_request,
+                        "rounds": resolved_rounds,
+                        "dry_run": True,
+                        "prompt": adjusted_prompt,
+                        "schema": build_agent_output_schema(current_agent),
+                        "run_id": audit_logger.run_id,
+                        "seed": audit_logger.seed,
+                    }
+                    dry_run_triggered = True
+                    break
                 audit_logger.log(
                     "turn.attempt.started",
                     {
@@ -462,6 +644,8 @@ def run_two_agent_dialogue(
                         workdir=resolved_workdir,
                         provider_options=provider_options,
                         timeout_level=effective_timeout_level,
+                        run_id=audit_logger.run_id,
+                        seed=audit_logger.seed,
                     )
                 except Exception as exc:
                     audit_logger.log(
@@ -487,6 +671,16 @@ def run_two_agent_dialogue(
                 )
                 structured_content = parsed_content
                 raw_payload = parsed_payload
+                if is_valid and isinstance(parsed_content, dict):
+                    commands = _collect_commands(parsed_content, current_agent)
+                    safety_errors = _command_policy_errors(
+                        commands,
+                        allowlist=safety_cfg.get("command_allowlist", []),
+                        denylist=safety_cfg.get("command_denylist", []),
+                    )
+                    if safety_errors:
+                        is_valid = False
+                        protocol_errors = protocol_errors + safety_errors
                 audit_logger.log(
                     "turn.attempt.completed",
                     {
@@ -522,6 +716,9 @@ def run_two_agent_dialogue(
                     "请严格匹配以下 schema：\n"
                     + json.dumps(schema, ensure_ascii=False, indent=2)
                 )
+
+            if dry_run_triggered:
+                break
 
             if protocol_errors:
                 raise RuntimeError(
@@ -570,6 +767,8 @@ def run_two_agent_dialogue(
                 _safe_print(text)
 
             current_agent = peer_agent
+            if dry_run_triggered:
+                break
     except Exception as exc:
         run_error = {
             "error_type": type(exc).__name__,
@@ -588,6 +787,8 @@ def run_two_agent_dialogue(
             "project_path": resolved_workdir,
             "turns": transcript,
         }
+        if dry_run_payload is not None:
+            summary["dry_run"] = True
         if run_error is not None:
             summary["error"] = run_error
         audit_logger.finalize(
@@ -595,11 +796,23 @@ def run_two_agent_dialogue(
             summary=summary,
         )
 
+    if dry_run_payload is not None:
+        dry_run_payload["log"] = {
+            "run_id": audit_logger.run_id,
+            "log_file": str(audit_logger.log_file) if audit_logger.log_file else None,
+            "summary_file": (
+                str(audit_logger.summary_file) if audit_logger.summary_file else None
+            ),
+        }
+        return dry_run_payload
+
     result_payload = {
         "workspace": "Friends Bar",
         "user_request": user_request,
         "rounds": resolved_rounds,
         "turns": transcript,
+        "run_id": audit_logger.run_id,
+        "seed": audit_logger.seed,
         "log": {
             "run_id": audit_logger.run_id,
             "log_file": str(audit_logger.log_file) if audit_logger.log_file else None,

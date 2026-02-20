@@ -44,6 +44,24 @@ def build_parser() -> argparse.ArgumentParser:
         default="standard",
         help="Timeout profile: quick / standard / complex",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Only build prompt/schema without invoking providers",
+    )
+    parser.add_argument(
+        "--dump-prompt",
+        nargs="?",
+        const="-",
+        default=None,
+        help="Dump the prompt to stdout or to a file path (use '-' for stdout)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional deterministic seed for the run",
+    )
     return parser
 
 
@@ -60,6 +78,9 @@ def main() -> int:
             stream=True,
             timeout_level=args.timeout_level,
             config_path="config.toml",
+            seed=args.seed,
+            dry_run=args.dry_run,
+            dump_prompt=args.dump_prompt if (args.dump_prompt or args.dry_run) else None,
         )
         return 0
     except Exception as exc:
