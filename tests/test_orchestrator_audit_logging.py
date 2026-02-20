@@ -24,9 +24,36 @@ def _fake_invoke(
     run_id: str | None = None,
     seed: int | None = None,
     dry_run: bool = False,
+    event_hook=None,
     config_path: str = "config.toml",
 ):
-    """Deterministic invoke stub for two turns using strict JSON protocol."""
+    """Deterministic invoke stub for PM -> Dev -> Reviewer turns."""
+    if cli == "duffy":
+        text = json.dumps(
+            {
+                "schema_version": "friendsbar.plan.v1",
+                "status": "ok",
+                "result": {
+                    "requirement_breakdown": ["任务A", "任务B"],
+                    "implementation_scope": "MVP",
+                    "acceptance_criteria": ["可运行", "有测试"],
+                    "handoff_notes": "优先完成核心路径",
+                },
+                "next_question": "玲娜贝儿是否开始实现？",
+                "warnings": [],
+                "errors": [],
+            },
+            ensure_ascii=False,
+        )
+        return {
+            "cli": "claude-minimax",
+            "text": text,
+            "session_id": "session-duffy",
+            "elapsed_ms": 9,
+            "run_id": run_id,
+            "seed": seed,
+        }
+
     if cli == "linabell":
         text = json.dumps(
             {
@@ -40,7 +67,7 @@ def _fake_invoke(
                     ],
                     "risks_and_rollback": "none",
                 },
-                "next_question": "请确认是否通过？",
+                "next_question": "星黛露是否开始评审？",
                 "warnings": [],
                 "errors": [],
             },
@@ -67,16 +94,16 @@ def _fake_invoke(
             "root_cause": ["none"],
             "issues": [],
             "gate": {"decision": "allow", "conditions": []},
-            "next_question": "是否继续下一步？",
+            "next_question": "达菲是否更新下一轮需求？",
             "warnings": [],
             "errors": [],
         },
         ensure_ascii=False,
     )
     return {
-        "cli": "claude-minimax",
+        "cli": "gemini",
         "text": text,
-        "session_id": "session-duffy",
+        "session_id": "session-stella",
         "elapsed_ms": 11,
         "run_id": run_id,
         "seed": seed,
@@ -97,8 +124,8 @@ class TestOrchestratorAuditLogging(unittest.TestCase):
                 textwrap.dedent(
                     f"""
                     [friends_bar]
-                    default_rounds = 2
-                    start_agent = "linabell"
+                    default_rounds = 3
+                    start_agent = "duffy"
 
                     [friends_bar.logging]
                     enabled = true
@@ -114,8 +141,8 @@ class TestOrchestratorAuditLogging(unittest.TestCase):
             with patch("src.friends_bar.orchestrator.invoke", side_effect=_fake_invoke):
                 result = run_two_agent_dialogue(
                     "请检查最小任务",
-                    rounds=2,
-                    start_agent="linabell",
+                    rounds=3,
+                    start_agent="duffy",
                     project_path=str(workdir),
                     use_session=False,
                     stream=False,
@@ -139,16 +166,18 @@ class TestOrchestratorAuditLogging(unittest.TestCase):
             self.assertIn("seed", run_started)
 
             turn_completed = [item for item in events if item["event"] == "turn.completed"]
-            self.assertEqual(len(turn_completed), 2)
-            linabell_payload = json.loads(turn_completed[0]["payload"]["final_text"])
-            duffy_payload = json.loads(turn_completed[1]["payload"]["final_text"])
-            self.assertEqual(linabell_payload["schema_version"], "friendsbar.delivery.v1")
-            self.assertEqual(duffy_payload["schema_version"], "friendsbar.review.v1")
+            self.assertEqual(len(turn_completed), 3)
+            pm_payload = json.loads(turn_completed[0]["payload"]["final_text"])
+            dev_payload = json.loads(turn_completed[1]["payload"]["final_text"])
+            review_payload = json.loads(turn_completed[2]["payload"]["final_text"])
+            self.assertEqual(pm_payload["schema_version"], "friendsbar.plan.v1")
+            self.assertEqual(dev_payload["schema_version"], "friendsbar.delivery.v1")
+            self.assertEqual(review_payload["schema_version"], "friendsbar.review.v1")
 
             summary = json.loads(Path(summary_file).read_text(encoding="utf-8"))
             self.assertEqual(summary["status"], "success")
-            self.assertEqual(summary["turns_completed"], 2)
-            self.assertEqual(len(summary["turns"]), 2)
+            self.assertEqual(summary["turns_completed"], 3)
+            self.assertEqual(len(summary["turns"]), 3)
 
 
 if __name__ == "__main__":

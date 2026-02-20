@@ -1,4 +1,4 @@
-"""Unified invoke entry for CLI providers."""
+﻿"""Unified invoke entry for CLI providers."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Optional
 
 from src.providers.claude_minimax import invoke_claude_minimax
 from src.providers.codex import invoke_codex
+from src.providers.gemini import invoke_gemini
 from src.utils.process_runner import ProcessExecutionError
 from src.utils.runtime_config import load_runtime_config
 from src.utils.session_store import get_session_id, set_session_id
@@ -17,18 +18,22 @@ ProviderFn = Callable[..., Dict[str, Any]]
 PROVIDERS: Dict[str, ProviderFn] = {
     "codex": invoke_codex,
     "claude-minimax": invoke_claude_minimax,
+    "gemini": invoke_gemini,
 }
 
 # External aliases -> provider keys.
 CLI_ALIASES = {
     "claude_minimax": "claude-minimax",
+    "gemini-cli": "gemini",
     "linabell": "codex",
     "duffy": "claude-minimax",
+    "stella": "gemini",
     "玲娜贝儿": "codex",
     "达菲": "claude-minimax",
+    "星黛露": "gemini",
     # Backward-compatible mojibake aliases.
-    "짎쳹괔랿": "codex",
-    "댄뷅": "claude-minimax",
+    "歆庫彻甏旊灴": "codex",
+    "雽勲穮": "claude-minimax",
 }
 
 SUPPORTED_CLIS = tuple(sorted(set(PROVIDERS.keys()) | set(CLI_ALIASES.keys())))
@@ -82,6 +87,7 @@ def invoke(
     run_id: Optional[str] = None,
     seed: Optional[int] = None,
     dry_run: bool = False,
+    event_hook: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     config_path: str = "config.toml",
 ) -> Dict[str, Any]:
     """Invoke one provider through a unified interface."""
@@ -98,9 +104,20 @@ def invoke(
     defaults = runtime_config.get("defaults", {})
     provider_config = runtime_config.get("providers", {}).get(provider_name, {})
     timeout_profiles = runtime_config.get("timeouts", {})
+    provider_default_options = {
+        key: value
+        for key, value in provider_config.items()
+        if key not in {"timeout_level", "retry_attempts", "use_session"}
+    }
+    resolved_provider_options = {
+        **provider_default_options,
+        **(provider_options or {}),
+    }
 
     resolved_use_session = (
-        bool(defaults.get("use_session", True)) if use_session is None else use_session
+        bool(provider_config.get("use_session", defaults.get("use_session", True)))
+        if use_session is None
+        else use_session
     )
     resolved_stream = bool(defaults.get("stream", True)) if stream is None else stream
 
@@ -151,7 +168,7 @@ def invoke(
             "dry_run": True,
             "run_id": run_id,
             "seed": seed,
-            "provider_options": provider_options or {},
+            "provider_options": resolved_provider_options,
         }
 
     last_session_id = get_session_id(provider_name) if resolved_use_session else None
@@ -164,7 +181,8 @@ def invoke(
                 session_id=last_session_id,
                 stream=resolved_stream,
                 workdir=workdir,
-                **(provider_options or {}),
+                event_hook=event_hook,
+                **resolved_provider_options,
                 timeout_level=resolved_timeout_level,
                 idle_timeout_s=resolved_idle_timeout_s,
                 max_timeout_s=resolved_max_timeout_s,
@@ -199,3 +217,5 @@ def invoke(
         "run_id": run_id,
         "seed": seed,
     }
+
+

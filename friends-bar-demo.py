@@ -1,5 +1,5 @@
-#!/usr/bin/env python
-"""Friends Bar Phase0 demo script: run two-agent collaboration."""
+﻿#!/usr/bin/env python
+"""Friends Bar Phase0 demo script: run multi-agent collaboration."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from src.friends_bar.orchestrator import run_two_agent_dialogue
 def build_parser() -> argparse.ArgumentParser:
     """Build command-line parser."""
     parser = argparse.ArgumentParser(
-        description="Friends Bar two-agent demo (linabell <-> duffy)",
+        description="Friends Bar multi-agent demo (duffy -> linabell -> stella)",
     )
     parser.add_argument("prompt", help="User task, e.g. design a minimal MVP")
     parser.add_argument(
@@ -25,8 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--start-agent",
         default=None,
         help=(
-            "First turn agent. Supported: linabell / duffy / codex / claude-minimax / "
-            "玲娜贝儿 / 达菲. Default from config.toml"
+            "First turn agent. Supported: linabell / duffy / stella / codex / "
+            "claude-minimax / gemini / 玲娜贝儿 / 达菲 / 星黛露. Default from config.toml"
         ),
     )
     parser.add_argument(
@@ -34,11 +34,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Task working directory; defaults to current directory",
     )
-    parser.add_argument(
+    session_group = parser.add_mutually_exclusive_group()
+    session_group.add_argument(
         "--use-session",
+        dest="use_session",
         action="store_true",
-        help="Enable provider session resume (default: off)",
+        help="Force-enable provider session resume",
     )
+    session_group.add_argument(
+        "--no-session",
+        dest="use_session",
+        action="store_false",
+        help="Force-disable provider session resume",
+    )
+    parser.set_defaults(use_session=None)
     parser.add_argument(
         "--timeout-level",
         default="standard",
@@ -90,3 +99,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

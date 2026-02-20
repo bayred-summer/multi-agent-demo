@@ -2,6 +2,7 @@
 
 from src.protocol.models import (
     ENVELOPE_SCHEMA_VERSION,
+    PLAN_SCHEMA_VERSION,
     REVIEW_SCHEMA_VERSION,
     TASK_SCHEMA_VERSION,
     DELIVERY_SCHEMA_VERSION,
@@ -16,6 +17,7 @@ from src.protocol.validators import (
 __all__ = [
     "ENVELOPE_SCHEMA_VERSION",
     "TASK_SCHEMA_VERSION",
+    "PLAN_SCHEMA_VERSION",
     "DELIVERY_SCHEMA_VERSION",
     "REVIEW_SCHEMA_VERSION",
     "build_task_envelope",

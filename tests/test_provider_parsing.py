@@ -10,6 +10,13 @@ from src.providers.claude_minimax import (
     _pick_final_text,
 )
 from src.providers.codex import _extract_assistant_text
+from src.providers.gemini import (
+    _extract_assistant_text as _extract_gemini_text,
+    _normalize_auth_mode,
+    _pick_final_text as _pick_gemini_final_text,
+    _resolve_adapter,
+    _validate_auth_prerequisites,
+)
 
 
 class TestProviderParsing(unittest.TestCase):
@@ -63,6 +70,46 @@ class TestProviderParsing(unittest.TestCase):
         self.assertEqual(
             text, '{"schema_version":"friendsbar.review.v1","status":"ok"}'
         )
+
+    def test_gemini_delta_then_full_message_is_not_duplicated(self) -> None:
+        state = {"saw_delta": False, "session_id": None}
+        delta = _extract_gemini_text(
+            {"type": "message", "role": "assistant", "content": "Hello", "delta": True},
+            state,
+        )
+        full = _extract_gemini_text(
+            {"type": "message", "role": "assistant", "content": "Hello", "delta": False},
+            state,
+        )
+        self.assertEqual(delta, "Hello")
+        self.assertEqual(full, "")
+
+    def test_gemini_pick_final_prefers_json_response_text(self) -> None:
+        state = {
+            "response_text": '{"status":"ok"}',
+            "output_parts": ["fallback"],
+        }
+        text = _pick_gemini_final_text(state)
+        self.assertEqual(text, '{"status":"ok"}')
+
+    def test_gemini_normalize_auth_mode(self) -> None:
+        self.assertEqual(_normalize_auth_mode("api_key"), "api_key")
+        with self.assertRaises(ValueError):
+            _normalize_auth_mode("unknown")
+
+    def test_gemini_validate_auth_mode_api_key_requires_env(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(ValueError):
+                _validate_auth_prerequisites("api_key")
+
+    def test_gemini_adapter_normalization(self) -> None:
+        self.assertEqual(_resolve_adapter("cli"), "gemini-cli")
+        self.assertEqual(_resolve_adapter("antigravity-mcp"), "antigravity")
+        with self.assertRaises(ValueError):
+            _resolve_adapter("invalid-adapter")
 
 
 if __name__ == "__main__":

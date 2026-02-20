@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -179,10 +179,14 @@ def run_stream_process(
     command: str,
     args: List[str],
     workdir: Optional[str],
+    env: Optional[Dict[str, str]] = None,
     timeout: TimeoutConfig,
     stream_stderr: bool,
     stderr_prefix: str,
     on_stdout_line: Callable[[str], None],
+    on_process_start: Optional[Callable[[Dict[str, Any]], None]] = None,
+    on_first_byte: Optional[Callable[[Dict[str, Any]], None]] = None,
+    inherit_stdin: bool = False,
 ) -> ProcessResult:
     """运行一个流式 CLI 子进程。"""
     command_repr = _build_command_repr(command, args, workdir)
@@ -194,6 +198,7 @@ def run_stream_process(
     stderr_lines: List[str] = []
     terminated_reason: Optional[str] = None
     process: Optional[subprocess.Popen] = None
+    first_byte_emitted = False
 
     def elapsed_ms() -> int:
         return int((time.monotonic() - start) * 1000)
@@ -257,10 +262,11 @@ def run_stream_process(
         try:
             process = subprocess.Popen(
                 [command, *args],
-                stdin=subprocess.DEVNULL,
+                stdin=None if inherit_stdin else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=workdir,
+                env=env,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -277,6 +283,20 @@ def run_stream_process(
 
         assert process.stdout is not None
         assert process.stderr is not None
+
+        if on_process_start:
+            try:
+                on_process_start(
+                    {
+                        "provider": provider,
+                        "pid": process.pid,
+                        "command_repr": command_repr,
+                        "elapsed_ms": elapsed_ms(),
+                    }
+                )
+            except Exception:
+                # Logging hooks must not break main flow.
+                pass
 
         stdout_thread = threading.Thread(
             target=_drain_text_stream,
@@ -300,6 +320,18 @@ def run_stream_process(
                 line = ""
 
             if source:
+                if not first_byte_emitted and on_first_byte:
+                    first_byte_emitted = True
+                    try:
+                        on_first_byte(
+                            {
+                                "provider": provider,
+                                "source": source,
+                                "elapsed_ms": elapsed_ms(),
+                            }
+                        )
+                    except Exception:
+                        pass
                 if source == "stderr":
                     if line.strip():
                         stderr_lines.append(line.strip())

@@ -1,6 +1,8 @@
-"""Provider 实现模块。
+"""Provider modules for external CLIs.
 
-当前仅启用：
-- codex（Friends Bar: 玲娜贝儿）
-- claude-minimax（Friends Bar: 达菲）
+Current providers:
+- codex
+- claude-minimax
+- gemini
 """
+

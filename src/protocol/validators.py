@@ -13,10 +13,15 @@ from .models import (
     ALLOWED_STATUS,
     DELIVERY_SCHEMA_VERSION,
     ENVELOPE_SCHEMA_VERSION,
+    PLAN_SCHEMA_VERSION,
     REVIEW_SCHEMA_VERSION,
     build_delivery_content,
+    build_plan_content,
     build_review_content,
 )
+
+REVIEW_AGENTS = {"stella"}
+PLAN_AGENTS = {"duffy"}
 
 
 @dataclass
@@ -31,7 +36,7 @@ class ProtocolValidationResult:
 
 def build_agent_output_schema(current_agent: str) -> Dict[str, Any]:
     """Return JSON Schema for one agent output payload."""
-    if current_agent == "duffy":
+    if current_agent in REVIEW_AGENTS:
         return {
             "type": "object",
             "additionalProperties": False,
@@ -100,6 +105,61 @@ def build_agent_output_schema(current_agent: str) -> Dict[str, Any]:
                             "enum": sorted(ALLOWED_GATE_DECISION),
                         },
                         "conditions": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+                "next_question": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": ".*[？?].*",
+                },
+                "warnings": {"type": "array", "items": {"type": "string"}},
+                "errors": {"type": "array", "items": {"type": "string"}},
+            },
+        }
+
+    if current_agent in PLAN_AGENTS:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "schema_version",
+                "status",
+                "result",
+                "next_question",
+                "warnings",
+                "errors",
+            ],
+            "properties": {
+                "schema_version": {
+                    "type": "string",
+                    "enum": [PLAN_SCHEMA_VERSION],
+                },
+                "status": {
+                    "type": "string",
+                    "enum": sorted(ALLOWED_STATUS),
+                },
+                "result": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "requirement_breakdown",
+                        "implementation_scope",
+                        "acceptance_criteria",
+                        "handoff_notes",
+                    ],
+                    "properties": {
+                        "requirement_breakdown": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {"type": "string"},
+                        },
+                        "implementation_scope": {"type": "string"},
+                        "acceptance_criteria": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {"type": "string"},
+                        },
+                        "handoff_notes": {"type": "string"},
                     },
                 },
                 "next_question": {
@@ -200,6 +260,12 @@ def _validate_envelope(envelope: Dict[str, Any]) -> List[Dict[str, Any]]:
     return errors
 
 
+def _role_for_agent(current_agent: str) -> str:
+    if current_agent in REVIEW_AGENTS:
+        return "review"
+    if current_agent in PLAN_AGENTS:
+        return "observation"
+    return "final"
 
 
 def validate_json_protocol_content(
@@ -223,7 +289,7 @@ def validate_json_protocol_content(
         "schema_version": ENVELOPE_SCHEMA_VERSION,
         "sender": current_agent,
         "recipient": peer_display,
-        "role": "review" if current_agent == "duffy" else "final",
+        "role": _role_for_agent(current_agent),
         "timestamp": "",
         "content": {},
     }
@@ -235,7 +301,7 @@ def validate_json_protocol_content(
     elif "？" not in next_question and "?" not in next_question:
         _append_error(errors, err.E_SCHEMA_INVALID_FORMAT, "next_question must contain question mark")
 
-    if current_agent == "duffy":
+    if current_agent in REVIEW_AGENTS:
         required_top_keys = {
             "schema_version",
             "status",
@@ -361,7 +427,69 @@ def validate_json_protocol_content(
         )
         return ProtocolValidationResult(ok=len(errors) == 0, errors=errors, warnings=warnings, parsed_content=parsed)
 
-    # linabell
+    if current_agent in PLAN_AGENTS:
+        required_top_keys = {
+            "schema_version",
+            "status",
+            "result",
+            "next_question",
+            "warnings",
+            "errors",
+        }
+        unknown_top_keys = set(payload.keys()) - required_top_keys
+        for key in sorted(unknown_top_keys):
+            _append_error(errors, err.E_SCHEMA_INVALID_FORMAT, f"unexpected field: {key}")
+        missing_top_keys = required_top_keys - set(payload.keys())
+        for key in sorted(missing_top_keys):
+            _append_error(errors, err.E_SCHEMA_MISSING_FIELD, f"missing field: {key}")
+
+        if payload.get("schema_version") != PLAN_SCHEMA_VERSION:
+            _append_error(errors, err.E_SCHEMA_INVALID_ENUM, "invalid plan schema_version")
+        status = payload.get("status")
+        if status not in ALLOWED_STATUS:
+            _append_error(errors, err.E_SCHEMA_INVALID_ENUM, "invalid status enum")
+
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            result = {}
+            _append_error(errors, err.E_SCHEMA_MISSING_FIELD, "result must be object")
+        else:
+            required_result_keys = {
+                "requirement_breakdown",
+                "implementation_scope",
+                "acceptance_criteria",
+                "handoff_notes",
+            }
+            unknown_result_keys = set(result.keys()) - required_result_keys
+            for key in sorted(unknown_result_keys):
+                _append_error(errors, err.E_SCHEMA_INVALID_FORMAT, f"unexpected result field: {key}")
+            missing_result_keys = required_result_keys - set(result.keys())
+            for key in sorted(missing_result_keys):
+                _append_error(errors, err.E_SCHEMA_MISSING_FIELD, f"missing result field: {key}")
+
+        raw_breakdown = result.get("requirement_breakdown")
+        requirement_breakdown = [str(x) for x in raw_breakdown] if isinstance(raw_breakdown, list) else []
+        if not requirement_breakdown:
+            _append_error(errors, err.E_SCHEMA_INVALID_FORMAT, "result.requirement_breakdown must be non-empty list")
+
+        raw_criteria = result.get("acceptance_criteria")
+        acceptance_criteria = [str(x) for x in raw_criteria] if isinstance(raw_criteria, list) else []
+        if not acceptance_criteria:
+            _append_error(errors, err.E_SCHEMA_INVALID_FORMAT, "result.acceptance_criteria must be non-empty list")
+
+        parsed_plan = build_plan_content(
+            requirement_breakdown=requirement_breakdown,
+            implementation_scope=str(result.get("implementation_scope", "")),
+            acceptance_criteria=acceptance_criteria,
+            handoff_notes=str(result.get("handoff_notes", "")),
+            next_question=next_question.strip() if isinstance(next_question, str) else "",
+        )
+        parsed_plan["status"] = status if isinstance(status, str) else parsed_plan["status"]
+        parsed_plan["warnings"] = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
+        parsed_plan["errors"] = payload.get("errors") if isinstance(payload.get("errors"), list) else []
+
+        return ProtocolValidationResult(ok=len(errors) == 0, errors=errors, warnings=warnings, parsed_content=parsed_plan)
+
     required_top_keys = {
         "schema_version",
         "status",
@@ -439,9 +567,6 @@ def validate_json_protocol_content(
         risks_and_rollback=str(result.get("risks_and_rollback", "")),
         next_question=next_question.strip() if isinstance(next_question, str) else "",
     )
-    if parsed_delivery.get("schema_version") != DELIVERY_SCHEMA_VERSION:
-        _append_error(errors, err.E_SCHEMA_INVALID_ENUM, "invalid delivery schema_version")
-
     parsed_delivery["status"] = status if isinstance(status, str) else parsed_delivery["status"]
     parsed_delivery["warnings"] = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
     parsed_delivery["errors"] = payload.get("errors") if isinstance(payload.get("errors"), list) else []

@@ -6,7 +6,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from src.utils.process_runner import (
     ProcessExecutionError,
@@ -136,6 +136,7 @@ def invoke_codex(
     exec_mode: str = "safe",
     sandbox_mode: Optional[str] = None,
     output_schema: Optional[Any] = None,
+    event_hook: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     timeout_level: str = "standard",
     idle_timeout_s: Optional[float] = None,
     max_timeout_s: Optional[float] = None,
@@ -216,6 +217,10 @@ def invoke_codex(
         terminate_grace_s=terminate_grace_s,
     )
 
+    def emit(event: str, payload: Dict[str, Any]) -> None:
+        if event_hook:
+            event_hook(event, payload)
+
     try:
         try:
             result = run_stream_process(
@@ -227,6 +232,8 @@ def invoke_codex(
                 stream_stderr=stream,
                 stderr_prefix="[codex stderr] ",
                 on_stdout_line=on_stdout_line,
+                on_process_start=lambda payload: emit("subprocess.started", payload),
+                on_first_byte=lambda payload: emit("subprocess.first_byte", payload),
             )
         except ProcessExecutionError as exc:
             raise ProcessExecutionError(

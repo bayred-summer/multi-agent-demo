@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 ENVELOPE_SCHEMA_VERSION = "friendsbar.envelope.v1"
 TASK_SCHEMA_VERSION = "friendsbar.task.v1"
+PLAN_SCHEMA_VERSION = "friendsbar.plan.v1"
 DELIVERY_SCHEMA_VERSION = "friendsbar.delivery.v1"
 REVIEW_SCHEMA_VERSION = "friendsbar.review.v1"
 
@@ -78,6 +79,30 @@ def build_delivery_content(
             "implementation_plan": implementation_plan,
             "execution_evidence": execution_evidence,
             "risks_and_rollback": risks_and_rollback,
+        },
+        "warnings": [],
+        "errors": [],
+        "next_question": next_question,
+    }
+
+
+def build_plan_content(
+    *,
+    requirement_breakdown: List[str],
+    implementation_scope: str,
+    acceptance_criteria: List[str],
+    handoff_notes: str,
+    next_question: str,
+) -> Dict[str, Any]:
+    """Create normalized PM planning content."""
+    return {
+        "schema_version": PLAN_SCHEMA_VERSION,
+        "status": "ok" if requirement_breakdown else "partial",
+        "result": {
+            "requirement_breakdown": requirement_breakdown,
+            "implementation_scope": implementation_scope,
+            "acceptance_criteria": acceptance_criteria,
+            "handoff_notes": handoff_notes,
         },
         "warnings": [],
         "errors": [],

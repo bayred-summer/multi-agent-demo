@@ -271,3 +271,80 @@ You can still call `invoke()` and Friends Bar with provider names or Chinese nam
 - 阻塞规则：P0/P1 问题未关闭时，结论必须为“不通过”或“有条件合入”
 - 建议要求：每条建议都要可执行，包含修复方向和回归验证方法
 - 非阻塞项：纯样式/偏好类建议不得作为阻塞理由
+
+## Gemini Dual Adapter
+
+Gemini provider now supports dual adapters:
+
+- `gemini-cli` (headless, parse stdout NDJSON/JSON)
+- `antigravity` (GUI callback bridge, no stdout parsing)
+
+Adapter selection priority:
+
+1. `provider_options.adapter`
+2. environment variable `GEMINI_ADAPTER`
+3. config default `providers.gemini.adapter`
+
+Gemini CLI network proxy (optional):
+
+- `providers.gemini.proxy`: injects `HTTP_PROXY/HTTPS_PROXY/http_proxy/https_proxy` to Gemini subprocess
+- `providers.gemini.no_proxy`: injects `NO_PROXY/no_proxy` to Gemini subprocess
+
+Example `config.toml`:
+
+```toml
+[providers.gemini]
+proxy = "http://127.0.0.1:7890"
+no_proxy = "localhost,127.0.0.1"
+```
+
+Antigravity callback bridge contract:
+
+- request file: `{mcp_callback_dir}/requests/{request_id}.json`
+- response file: `{mcp_callback_dir}/responses/{request_id}.json`
+- response payload must contain `request_id` and one of `text/response/content`
+
+Example:
+
+```python
+from src.invoke import invoke
+
+result = invoke(
+    "gemini",
+    "ping",
+    use_session=False,
+    stream=False,
+    provider_options={
+        "adapter": "antigravity",
+        "mcp_callback_dir": ".gemini/mcp_bridge",
+        "mcp_timeout_s": 300.0,
+    },
+)
+print(result["text"])
+```
+
+## Role Split (PM -> Dev -> Reviewer)
+
+Current Friends Bar role flow:
+
+1. `duffy` (`claude-minimax`) acts as Product Manager:
+   - break down requirements
+   - define acceptance criteria
+   - hand off tasks to `linabell`
+2. `linabell` (`codex`) keeps existing implementation responsibilities:
+   - code delivery
+   - execution evidence
+   - risk and rollback notes
+3. `stella` (`gemini`) acts as Reviewer/QA gate:
+   - verify with command evidence
+   - produce review issues and gate decision
+
+Structured schemas:
+
+- PM: `friendsbar.plan.v1`
+- Dev: `friendsbar.delivery.v1`
+- Reviewer: `friendsbar.review.v1`
+
+Default turn order:
+
+- `duffy -> linabell -> stella`

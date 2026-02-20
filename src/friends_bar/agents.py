@@ -8,14 +8,17 @@ from typing import Dict
 # Canonical internal IDs (ASCII only).
 LINA_BELL = "linabell"
 DUFFY = "duffy"
+STELLA = "stella"
 
 # Display names.
 LINA_BELL_ZH = "玲娜贝儿"
 DUFFY_ZH = "达菲"
+STELLA_ZH = "星黛露"
 
 # Backward-compatible mojibake aliases seen in old config files.
-LINA_BELL_MOJIBAKE = "짎쳹괔랿"
-DUFFY_MOJIBAKE = "댄뷅"
+LINA_BELL_MOJIBAKE = "歆庫彻甏旊灴"
+DUFFY_MOJIBAKE = "雽勲穮"
+STELLA_MOJIBAKE = "鏄熼化闇?"
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,16 @@ AGENTS: Dict[str, AgentProfile] = {
         display_name=DUFFY_ZH,
         provider="claude-minimax",
         mission=(
+            "产品经理："
+            "负责需求拆解、范围边界定义、优先级与验收目标设定，"
+            "将可执行任务清晰交接给玲娜贝儿。"
+        ),
+    ),
+    STELLA: AgentProfile(
+        name=STELLA,
+        display_name=STELLA_ZH,
+        provider="gemini",
+        mission=(
             "资深 Code Reviewer（兼 QA 测试负责人）："
             "以缺陷发现和质量门禁为核心，输出可复现证据、风险评估、回归策略与最终合入结论。"
         ),
@@ -55,15 +68,20 @@ AGENT_NAME_ALIASES = {
     "codex": LINA_BELL,
     "claude-minimax": DUFFY,
     "claude_minimax": DUFFY,
+    "gemini": STELLA,
+    "gemini-cli": STELLA,
     # Canonical IDs
     LINA_BELL: LINA_BELL,
     DUFFY: DUFFY,
+    STELLA: STELLA,
     # Chinese display names
     LINA_BELL_ZH: LINA_BELL,
     DUFFY_ZH: DUFFY,
+    STELLA_ZH: STELLA,
     # Legacy mojibake aliases
     LINA_BELL_MOJIBAKE: LINA_BELL,
     DUFFY_MOJIBAKE: DUFFY,
+    STELLA_MOJIBAKE: STELLA,
 }
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from src.utils.process_runner import (
     ProcessExecutionError,
@@ -165,6 +165,7 @@ def invoke_claude_minimax(
     disallowed_tools: Optional[List[str]] = None,
     tools: Optional[str | List[str]] = None,
     json_schema: Optional[Any] = None,
+    event_hook: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     include_partial_messages: bool = False,
     print_stderr: bool = False,
     timeout_level: str = "standard",
@@ -291,6 +292,10 @@ def invoke_claude_minimax(
         terminate_grace_s=terminate_grace_s,
     )
 
+    def emit(event: str, payload: Dict[str, Any]) -> None:
+        if event_hook:
+            event_hook(event, payload)
+
     try:
         result = run_stream_process(
             provider="claude-minimax",
@@ -302,6 +307,8 @@ def invoke_claude_minimax(
             stream_stderr=bool(print_stderr and stream),
             stderr_prefix="[claude stderr] ",
             on_stdout_line=on_stdout_line,
+            on_process_start=lambda payload: emit("subprocess.started", payload),
+            on_first_byte=lambda payload: emit("subprocess.first_byte", payload),
         )
     except ProcessExecutionError as exc:
         raise ProcessExecutionError(

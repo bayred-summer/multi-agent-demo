@@ -8,7 +8,29 @@ from src.protocol.validators import validate_json_protocol_content
 
 
 class TestProtocolJson(unittest.TestCase):
-    """Validate JSON payload schemas for delivery/review."""
+    """Validate JSON payload schemas for PM/delivery/review."""
+
+    def test_plan_json_ok(self) -> None:
+        payload = {
+            "schema_version": "friendsbar.plan.v1",
+            "status": "ok",
+            "result": {
+                "requirement_breakdown": ["a", "b"],
+                "implementation_scope": "scope",
+                "acceptance_criteria": ["c1", "c2"],
+                "handoff_notes": "handoff",
+            },
+            "next_question": "是否继续？",
+            "warnings": [],
+            "errors": [],
+        }
+        result = validate_json_protocol_content(
+            current_agent="duffy",
+            peer_display="玲娜贝儿",
+            payload=payload,
+            trace_id="trace-plan",
+        )
+        self.assertTrue(result.ok, msg=str(result.errors))
 
     def test_delivery_json_ok(self) -> None:
         payload = {
@@ -26,7 +48,7 @@ class TestProtocolJson(unittest.TestCase):
         }
         result = validate_json_protocol_content(
             current_agent="linabell",
-            peer_display="达菲",
+            peer_display="星黛露",
             payload=payload,
             trace_id="trace-delivery",
         )
@@ -46,7 +68,7 @@ class TestProtocolJson(unittest.TestCase):
             "errors": [],
         }
         result = validate_json_protocol_content(
-            current_agent="duffy",
+            current_agent="stella",
             peer_display="玲娜贝儿",
             payload=payload,
             trace_id="trace-review",
@@ -73,7 +95,7 @@ class TestProtocolJson(unittest.TestCase):
             "errors": [],
         }
         result = validate_json_protocol_content(
-            current_agent="duffy",
+            current_agent="stella",
             peer_display="玲娜贝儿",
             payload=payload,
             trace_id="trace-review-malformed",

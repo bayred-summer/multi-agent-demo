@@ -1,4 +1,4 @@
-"""Friends Bar Phase0: two-agent orchestration and prompt protocol."""
+﻿"""Friends Bar Phase0: multi-agent orchestration and prompt protocol."""
 
 from __future__ import annotations
 
@@ -15,11 +15,17 @@ from src.friends_bar.agents import (
     AGENTS,
     DUFFY,
     LINA_BELL,
+    STELLA,
     display_agent_name,
     normalize_agent_name,
 )
 from src.invoke import invoke
-from src.protocol.models import build_task_envelope
+from src.protocol.models import (
+    DELIVERY_SCHEMA_VERSION,
+    PLAN_SCHEMA_VERSION,
+    REVIEW_SCHEMA_VERSION,
+    build_task_envelope,
+)
 from src.protocol.validators import (
     build_agent_output_schema,
     validate_json_protocol_content,
@@ -27,17 +33,27 @@ from src.protocol.validators import (
 from src.utils.audit_log import AuditLogConfig, AuditLogger, text_meta
 from src.utils.runtime_config import load_runtime_config
 
-# Phase0 currently supports a fixed two-agent turn order.
-AGENT_TURN_ORDER = (LINA_BELL, DUFFY)
+# Phase0: fixed three-agent order (PM -> Dev -> Reviewer).
+AGENT_TURN_ORDER = (DUFFY, LINA_BELL, STELLA)
 # Keep retries small but non-zero for strict schema re-generation.
 MAX_PROTOCOL_RETRY = 3
 
 
 def _next_agent(current_name: str) -> str:
     """Return the next agent name by fixed turn order."""
-    if current_name == AGENT_TURN_ORDER[0]:
-        return AGENT_TURN_ORDER[1]
-    return AGENT_TURN_ORDER[0]
+    if current_name not in AGENT_TURN_ORDER:
+        return AGENT_TURN_ORDER[0]
+    idx = AGENT_TURN_ORDER.index(current_name)
+    return AGENT_TURN_ORDER[(idx + 1) % len(AGENT_TURN_ORDER)]
+
+
+def _expected_schema_for_agent(agent_name: str) -> str:
+    """Return expected schema version for the target agent."""
+    if agent_name == DUFFY:
+        return PLAN_SCHEMA_VERSION
+    if agent_name == STELLA:
+        return REVIEW_SCHEMA_VERSION
+    return DELIVERY_SCHEMA_VERSION
 
 
 def _path_within(child: Path, parent: Path) -> bool:
@@ -63,13 +79,13 @@ def _ensure_allowed_roots(project_path: str, allowed_roots: List[str]) -> None:
             continue
         if _path_within(project, Path(root)):
             return
-    raise ValueError(f"project_path is خارج允许根目录列表: {project_path}")
+    raise ValueError(f"project_path is 禺丕乇噩鍏佽鏍圭洰褰曞垪琛? {project_path}")
 
 
 def _collect_commands(protocol_content: Dict[str, Any], agent_name: str) -> List[str]:
     """Collect command strings from structured protocol output."""
     commands: List[str] = []
-    if agent_name == DUFFY:
+    if agent_name == STELLA:
         verification = protocol_content.get("verification", [])
         if isinstance(verification, list):
             for item in verification:
@@ -191,30 +207,274 @@ def _safe_print(text: str) -> None:
         print(safe_text)
 
 
-def _format_history(transcript: List[Dict[str, Any]]) -> str:
-    """Format transcript into readable history text."""
+def _truncate_text(text: str, max_chars: int) -> str:
+    """Truncate text safely for prompt history summaries."""
+    if max_chars <= 0:
+        return ""
+    raw = (text or "").strip()
+    if len(raw) <= max_chars:
+        return raw
+    return raw[: max_chars - 3] + "..."
+
+
+def _extract_latest_content(
+    transcript: List[Dict[str, Any]],
+    schema_version: str,
+) -> tuple[Optional[Dict[str, Any]], Optional[int]]:
+    """Return the latest protocol content for the given schema version."""
+    for item in reversed(transcript):
+        content = item.get("protocol_content")
+        if isinstance(content, dict) and content.get("schema_version") == schema_version:
+            return content, item.get("turn")
+    return None, None
+
+
+def _summarize_delivery(
+    content: Dict[str, Any],
+    *,
+    turn: Optional[int],
+    field_max_chars: int,
+    evidence_limit: int,
+) -> Dict[str, Any]:
+    """Summarize delivery payload for history injection."""
+    result = content.get("result", {}) if isinstance(content.get("result"), dict) else {}
+    evidence = result.get("execution_evidence", [])
+    summarized_evidence: List[str] = []
+    if isinstance(evidence, list):
+        for item in evidence[: max(0, evidence_limit)]:
+            if not isinstance(item, dict):
+                continue
+            cmd = _truncate_text(str(item.get("command", "")), field_max_chars)
+            res = _truncate_text(str(item.get("result", "")), field_max_chars)
+            if cmd or res:
+                summarized_evidence.append(f"{cmd} => {res}".strip())
+    return {
+        "turn": turn,
+        "status": content.get("status"),
+        "task_understanding": _truncate_text(
+            str(result.get("task_understanding", "")), field_max_chars
+        ),
+        "implementation_plan": _truncate_text(
+            str(result.get("implementation_plan", "")), field_max_chars
+        ),
+        "execution_evidence": summarized_evidence,
+        "risks_and_rollback": _truncate_text(
+            str(result.get("risks_and_rollback", "")), field_max_chars
+        ),
+        "next_question": _truncate_text(
+            str(content.get("next_question", "")), field_max_chars
+        ),
+    }
+
+
+def _summarize_plan(
+    content: Dict[str, Any],
+    *,
+    turn: Optional[int],
+    field_max_chars: int,
+    list_limit: int,
+) -> Dict[str, Any]:
+    """Summarize PM planning payload for history injection."""
+    result = content.get("result", {}) if isinstance(content.get("result"), dict) else {}
+
+    def _clip_list(values: Any) -> List[str]:
+        if not isinstance(values, list):
+            return []
+        return [
+            _truncate_text(str(item), field_max_chars)
+            for item in values[: max(0, list_limit)]
+        ]
+
+    return {
+        "turn": turn,
+        "status": content.get("status"),
+        "requirement_breakdown": _clip_list(result.get("requirement_breakdown", [])),
+        "implementation_scope": _truncate_text(
+            str(result.get("implementation_scope", "")), field_max_chars
+        ),
+        "acceptance_criteria": _clip_list(result.get("acceptance_criteria", [])),
+        "handoff_notes": _truncate_text(
+            str(result.get("handoff_notes", "")), field_max_chars
+        ),
+        "next_question": _truncate_text(
+            str(content.get("next_question", "")), field_max_chars
+        ),
+    }
+
+
+def _summarize_review(
+    content: Dict[str, Any],
+    *,
+    turn: Optional[int],
+    field_max_chars: int,
+    issue_limit: int,
+    root_cause_limit: int,
+) -> Dict[str, Any]:
+    """Summarize review payload for history injection."""
+    issues = content.get("issues", [])
+    summarized_issues: List[Dict[str, str]] = []
+    if isinstance(issues, list):
+        for item in issues[: max(0, issue_limit)]:
+            if not isinstance(item, dict):
+                continue
+            summary = _truncate_text(str(item.get("summary", "")), field_max_chars)
+            severity = str(item.get("severity", ""))
+            if summary:
+                summarized_issues.append({"severity": severity, "summary": summary})
+    root_cause = content.get("root_cause", [])
+    summarized_root: List[str] = []
+    if isinstance(root_cause, list):
+        for item in root_cause[: max(0, root_cause_limit)]:
+            summarized_root.append(_truncate_text(str(item), field_max_chars))
+    gate = content.get("gate", {}) if isinstance(content.get("gate"), dict) else {}
+    gate_conditions = gate.get("conditions", [])
+    if not isinstance(gate_conditions, list):
+        gate_conditions = []
+    gate_summary = {
+        "decision": gate.get("decision"),
+        "conditions": [
+            _truncate_text(str(item), field_max_chars)
+            for item in gate_conditions
+        ][: max(0, issue_limit)],
+    }
+    return {
+        "turn": turn,
+        "status": content.get("status"),
+        "acceptance": content.get("acceptance"),
+        "gate": gate_summary,
+        "issues": summarized_issues,
+        "root_cause": summarized_root,
+        "next_question": _truncate_text(
+            str(content.get("next_question", "")), field_max_chars
+        ),
+    }
+
+
+def _extract_key_changes(
+    plan: Optional[Dict[str, Any]],
+    delivery: Optional[Dict[str, Any]],
+    review: Optional[Dict[str, Any]],
+    *,
+    field_max_chars: int,
+    evidence_limit: int,
+    issue_limit: int,
+) -> List[str]:
+    """Extract key change hints from PM/Dev/Review outputs."""
+    key_changes: List[str] = []
+    if plan:
+        result = plan.get("result", {}) if isinstance(plan.get("result"), dict) else {}
+        acceptance = result.get("acceptance_criteria", [])
+        if isinstance(acceptance, list):
+            for item in acceptance[: max(0, issue_limit)]:
+                line = _truncate_text(str(item), field_max_chars)
+                if line:
+                    key_changes.append(f"acceptance: {line}")
+    if delivery:
+        result = delivery.get("result", {}) if isinstance(delivery.get("result"), dict) else {}
+        evidence = result.get("execution_evidence", [])
+        if isinstance(evidence, list):
+            for item in evidence[: max(0, evidence_limit)]:
+                if not isinstance(item, dict):
+                    continue
+                cmd = _truncate_text(str(item.get("command", "")), field_max_chars)
+                res = _truncate_text(str(item.get("result", "")), field_max_chars)
+                if cmd or res:
+                    key_changes.append(f"evidence: {cmd} => {res}".strip())
+    if review:
+        issues = review.get("issues", [])
+        if isinstance(issues, list):
+            for item in issues[: max(0, issue_limit)]:
+                if not isinstance(item, dict):
+                    continue
+                severity = str(item.get("severity", ""))
+                summary = _truncate_text(str(item.get("summary", "")), field_max_chars)
+                if summary:
+                    key_changes.append(f"issue[{severity}]: {summary}")
+    return key_changes
+
+
+def _format_history(
+    transcript: List[Dict[str, Any]],
+    history_cfg: Dict[str, Any],
+) -> str:
+    """Format trimmed transcript with latest PM + delivery + review summaries."""
     if not transcript:
-        return "（暂无历史对话）"
+        return "(no history)"
+
+    max_chars = int(history_cfg.get("max_chars", 3000))
+    field_max_chars = int(history_cfg.get("field_max_chars", 400))
+    evidence_limit = int(history_cfg.get("evidence_limit", 3))
+    issue_limit = int(history_cfg.get("issue_limit", 5))
+    root_cause_limit = int(history_cfg.get("root_cause_limit", 3))
+    include_key_changes = bool(history_cfg.get("include_key_changes", True))
+
+    delivery_content, delivery_turn = _extract_latest_content(
+        transcript, DELIVERY_SCHEMA_VERSION
+    )
+    plan_content, plan_turn = _extract_latest_content(
+        transcript, PLAN_SCHEMA_VERSION
+    )
+    review_content, review_turn = _extract_latest_content(
+        transcript, REVIEW_SCHEMA_VERSION
+    )
 
     lines: List[str] = []
-    for item in transcript:
-        agent_display = display_agent_name(item["agent"])
-        content = item.get("protocol_content")
-        if isinstance(content, dict):
-            history_brief = {
-                "schema_version": content.get("schema_version"),
-                "status": content.get("status"),
-                "acceptance": content.get("acceptance"),
-                "next_question": content.get("next_question"),
-            }
+    if plan_content:
+        summary = _summarize_plan(
+            plan_content,
+            turn=plan_turn,
+            field_max_chars=field_max_chars,
+            list_limit=max(issue_limit, evidence_limit),
+        )
+        lines.append(
+            "LATEST_PLAN="
+            + json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+        )
+    if delivery_content:
+        summary = _summarize_delivery(
+            delivery_content,
+            turn=delivery_turn,
+            field_max_chars=field_max_chars,
+            evidence_limit=evidence_limit,
+        )
+        lines.append(
+            "LATEST_DELIVERY="
+            + json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+        )
+    if review_content:
+        summary = _summarize_review(
+            review_content,
+            turn=review_turn,
+            field_max_chars=field_max_chars,
+            issue_limit=issue_limit,
+            root_cause_limit=root_cause_limit,
+        )
+        lines.append(
+            "LATEST_REVIEW="
+            + json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+        )
+    if include_key_changes:
+        key_changes = _extract_key_changes(
+            plan_content,
+            delivery_content,
+            review_content,
+            field_max_chars=field_max_chars,
+            evidence_limit=evidence_limit,
+            issue_limit=issue_limit,
+        )
+        if key_changes:
             lines.append(
-                f"第{item['turn']}轮 {agent_display}："
-                + json.dumps(history_brief, ensure_ascii=False)
+                "KEY_CHANGES="
+                + json.dumps(key_changes, ensure_ascii=False, separators=(",", ":"))
             )
-        else:
-            raw_text = str(item.get("text") or "")
-            lines.append(f"第{item['turn']}轮 {agent_display}：{raw_text[:300]}")
-    return "\n".join(lines)
+
+    if not lines:
+        return "(no relevant history)"
+
+    history_text = "\n".join(lines)
+    if max_chars > 0 and len(history_text) > max_chars:
+        history_text = history_text[: max_chars - 3] + "..."
+    return history_text
 
 
 def _extract_peer_question(
@@ -240,7 +500,7 @@ def _agent_output_contract(*, current_agent: str, peer_agent: str) -> str:
     schema_text = json.dumps(schema, ensure_ascii=False, indent=2)
 
     return (
-        "输出必须严格遵循 JSON schema。\n"
+        "输出必须严格遵循 JSON Schema。\n"
         "只允许输出一个 JSON 对象；禁止输出 Markdown、代码块、前后解释文本。\n"
         f"`next_question` 必须面向接收方 {peer_display}，并包含问号。\n"
         "若证据不足，请在 JSON 中用 status/warnings/errors 明确表达，禁止自然语言补丁。\n"
@@ -256,6 +516,7 @@ def _build_turn_prompt(
     workdir: str,
     response_mode: str,
     transcript: List[Dict[str, Any]],
+    history_cfg: Dict[str, Any],
     extra_instruction: Optional[str] = None,
     read_only: bool = False,
 ) -> str:
@@ -263,7 +524,7 @@ def _build_turn_prompt(
     mission = AGENTS[current_agent].mission
     current_display = display_agent_name(current_agent)
     peer_display = display_agent_name(peer_agent)
-    history_text = _format_history(transcript)
+    history_text = _format_history(transcript, history_cfg)
     peer_question = _extract_peer_question(transcript)
     peer_question_text = f"对方刚才的问题：{peer_question}\n\n" if peer_question else ""
 
@@ -280,25 +541,33 @@ def _build_turn_prompt(
         )
     else:
         mode_instruction = (
-            "当前为对话模式：只能输出文本，禁止工具调用、命令执行、文件读写与权限请求。"
+            "当前为对话模式：只输出 JSON，不调用工具，不执行命令，不读写文件。"
         )
 
     role_guard = ""
-    if current_agent == DUFFY:
+    if current_agent == STELLA:
         role_guard = (
             "角色硬约束：你是评审官，不是实现者。"
-            "必须先执行读取/测试命令再评审。"
-            "JSON 中 verification 至少包含2条命令证据。"
+            "必须先执行只读/测试命令再评审，verification 至少包含2条命令证据。"
+        )
+    elif current_agent == DUFFY:
+        role_guard = (
+            "角色硬约束：你是产品经理，不是实现者也不是评审者。"
+            "必须输出需求拆解和验收目标，并把任务交接给玲娜贝儿。"
         )
 
     turn_task_goal = user_request
-    if current_agent == DUFFY and transcript:
+    if current_agent == STELLA and transcript:
         turn_task_goal = (
-            "本轮仅做中文代码评审："
-            "请以协作历史中最近一条来自玲娜贝儿的交付为评审对象，"
-            "严格按输出协议给出验收结论、问题清单和回归门禁，"
-            "先读取实际文件并运行最小核验命令后再下结论，"
-            "禁止基于口头描述做评审，禁止执行实现或要求额外授权。"
+            "本轮只做中文代码评审。"
+            "请基于最近一条来自玲娜贝儿的交付进行核验，"
+            "按协议给出验收结论、问题清单和回归门禁。"
+        )
+    elif current_agent == DUFFY:
+        turn_task_goal = (
+            "本轮只做产品需求拆解。"
+            "请把用户需求拆解为可执行任务，明确范围边界、优先级和验收目标，"
+            "并交接给玲娜贝儿执行。"
         )
 
     safety_note = ""
@@ -383,7 +652,7 @@ def _resolve_agent_runtime(
             provider_options.update(agent_provider_opts)
 
     if (
-        agent_name == DUFFY
+        agent_name == STELLA
         and provider_name == "claude-minimax"
         and response_mode.strip().lower() == "execute"
     ):
@@ -430,7 +699,7 @@ def run_two_agent_dialogue(
     rounds: Optional[int] = None,
     start_agent: Optional[str] = None,
     project_path: Optional[str] = None,
-    use_session: bool = False,
+    use_session: Optional[bool] = None,
     stream: bool = True,
     timeout_level: Optional[str] = "standard",
     config_path: str = "config.toml",
@@ -438,7 +707,7 @@ def run_two_agent_dialogue(
     dry_run: bool = False,
     dump_prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Run Friends Bar two-agent dialogue loop."""
+    """Run Friends Bar multi-agent dialogue loop."""
     if not isinstance(user_request, str) or not user_request.strip():
         raise ValueError("user_request must be a non-empty string")
 
@@ -449,6 +718,9 @@ def run_two_agent_dialogue(
     safety_cfg = friends_bar_config.get("safety", {})
     if not isinstance(safety_cfg, dict):
         safety_cfg = {}
+    history_cfg = friends_bar_config.get("history", {})
+    if not isinstance(history_cfg, dict):
+        history_cfg = {}
 
     audit_logger = AuditLogger(
         AuditLogConfig.from_runtime_config(friends_bar_config),
@@ -465,7 +737,7 @@ def run_two_agent_dialogue(
         raise ValueError("rounds must be >= 1")
 
     resolved_start_agent = (
-        str(friends_bar_config.get("start_agent", LINA_BELL))
+        str(friends_bar_config.get("start_agent", DUFFY))
         if start_agent is None
         else start_agent
     )
@@ -498,7 +770,9 @@ def run_two_agent_dialogue(
                 "rounds": resolved_rounds,
                 "start_agent": current_agent,
                 "project_path": resolved_workdir,
-                "use_session": bool(use_session),
+                "use_session": (
+                    "config_default" if use_session is None else bool(use_session)
+                ),
                 "timeout_level": timeout_level,
                 "stream": bool(stream),
             },
@@ -514,7 +788,7 @@ def run_two_agent_dialogue(
             user_request=user_request,
             workdir=resolved_workdir,
             timeout_level=timeout_level,
-            expected_schema_version="friendsbar.review.v1",
+            expected_schema_version=_expected_schema_for_agent(current_agent),
         ),
     )
 
@@ -528,6 +802,14 @@ def run_two_agent_dialogue(
                 safety_cfg=safety_cfg,
             )
 
+            audit_logger.log(
+                "round.started",
+                {
+                    "turn": turn,
+                    "agent": current_agent,
+                    "peer_agent": peer_agent,
+                },
+            )
             audit_logger.log(
                 "turn.started",
                 {
@@ -555,9 +837,10 @@ def run_two_agent_dialogue(
 
             for attempt_idx in range(MAX_PROTOCOL_RETRY + 1):
                 attempt_count = attempt_idx + 1
-                # Duffy review often needs extra pre-flight time for CLI tools.
+                attempt_started = time.monotonic()
+                # Reviewer usually needs extra pre-flight time for CLI/tools.
                 effective_timeout_level = timeout_level
-                if current_agent == DUFFY and timeout_level == "quick":
+                if current_agent == STELLA and timeout_level == "quick":
                     effective_timeout_level = "standard"
 
                 adjusted_prompt = _build_turn_prompt(
@@ -567,8 +850,20 @@ def run_two_agent_dialogue(
                     workdir=resolved_workdir,
                     response_mode=runtime_info["response_mode"],
                     transcript=transcript,
+                    history_cfg=history_cfg,
                     extra_instruction=extra_instruction,
                     read_only=bool(safety_cfg.get("read_only", False)),
+                )
+                prompt_bytes = len(adjusted_prompt.encode("utf-8"))
+                audit_logger.log(
+                    "prompt.stats",
+                    {
+                        "turn": turn,
+                        "attempt": attempt_count,
+                        "agent": current_agent,
+                        "chars": len(adjusted_prompt),
+                        "bytes": prompt_bytes,
+                    },
                 )
                 dump_path = _dump_prompt(
                     prompt=adjusted_prompt,
@@ -636,6 +931,17 @@ def run_two_agent_dialogue(
                     provider_options["output_schema"] = agent_schema
 
                 try:
+                    def event_hook(event: str, payload: Dict[str, Any]) -> None:
+                        audit_logger.log(
+                            event,
+                            {
+                                "turn": turn,
+                                "attempt": attempt_count,
+                                "agent": current_agent,
+                                **payload,
+                            },
+                        )
+
                     result = invoke(
                         current_agent,
                         adjusted_prompt,
@@ -646,6 +952,7 @@ def run_two_agent_dialogue(
                         timeout_level=effective_timeout_level,
                         run_id=audit_logger.run_id,
                         seed=audit_logger.seed,
+                        event_hook=event_hook,
                     )
                 except Exception as exc:
                     audit_logger.log(
@@ -661,13 +968,26 @@ def run_two_agent_dialogue(
                     raise
 
                 raw_text = (result.get("text") or "").strip()
-                text = raw_text if raw_text else "（空回复）"
+                text = raw_text if raw_text else "(empty reply)"
 
+                validation_started = time.monotonic()
                 is_valid, protocol_errors, parsed_content, parsed_payload = _validate_agent_output(
                     current_agent=current_agent,
                     output=text,
                     peer_agent=peer_agent,
                     trace_id=audit_logger.run_id,
+                )
+                audit_logger.log(
+                    "protocol.validated",
+                    {
+                        "turn": turn,
+                        "attempt": attempt_count,
+                        "agent": current_agent,
+                        "is_valid": is_valid,
+                        "errors": protocol_errors,
+                        "validation_ms": int((time.monotonic() - validation_started) * 1000),
+                        "attempt_elapsed_ms": int((time.monotonic() - attempt_started) * 1000),
+                    },
                 )
                 structured_content = parsed_content
                 raw_payload = parsed_payload
@@ -822,5 +1142,7 @@ def run_two_agent_dialogue(
         },
     }
     if stream and result_payload["log"]["log_file"]:
-        print(f"\n[system] 本次日志文件: {result_payload['log']['log_file']}")
+        print(f"\n[system] 鏈鏃ュ織鏂囦欢: {result_payload['log']['log_file']}")
     return result_payload
+
+

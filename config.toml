@@ -11,20 +11,41 @@ retry_backoff_s = 1.0
 [providers.codex]
 timeout_level = "standard"
 retry_attempts = 1
+use_session = true
 exec_mode = "safe"
 
 [providers.claude-minimax]
 timeout_level = "standard"
 retry_attempts = 1
+use_session = true
 permission_mode = "bypassPermissions"
 include_partial_messages = false
 print_stderr = false
 
-# Friends Bar two-agent config
+[providers.gemini]
+timeout_level = "standard"
+retry_attempts = 0
+use_session = true
+adapter = "gemini-cli"
+model = "gemini-3-pro-preview"
+auth_mode = "auto"
+approval_mode = "default"
+output_format = "stream-json"
+yolo = false
+no_browser = false
+proxy = "http://127.0.0.1:7890"
+no_proxy = "localhost,127.0.0.1"
+print_stderr = false
+mcp_callback_dir = ".gemini/mcp_bridge"
+mcp_poll_interval_s = 0.25
+mcp_timeout_s = 300.0
+mcp_cleanup_response = true
+
+# Friends Bar multi-agent config
 [friends_bar]
 name = "Friends Bar"
 default_rounds = 4
-start_agent = "linabell"
+start_agent = "duffy"
 
 [friends_bar.safety]
 read_only = false
@@ -41,6 +62,14 @@ dir = ".friends-bar/logs"
 include_prompt_preview = true
 max_preview_chars = 1200
 
+[friends_bar.history]
+max_chars = 3000
+field_max_chars = 400
+evidence_limit = 3
+issue_limit = 5
+root_cause_limit = 3
+include_key_changes = true
+
 [friends_bar.agents.linabell]
 provider = "codex"
 response_mode = "execute"
@@ -50,12 +79,20 @@ exec_mode = "bypass"
 
 [friends_bar.agents.duffy]
 provider = "claude-minimax"
-response_mode = "execute"
+response_mode = "text_only"
 
 [friends_bar.agents.duffy.provider_options]
 permission_mode = "bypassPermissions"
 include_partial_messages = false
 print_stderr = false
+
+[friends_bar.agents.stella]
+provider = "gemini"
+response_mode = "execute"
+
+[friends_bar.agents.stella.provider_options]
+adapter = "gemini-cli"
+output_format = "stream-json"
 
 # Timeout profiles
 [timeouts.quick]

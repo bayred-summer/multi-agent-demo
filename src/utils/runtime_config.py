@@ -15,6 +15,7 @@ except ModuleNotFoundError:  # pragma: no cover - py<3.11 fallback
 
 LINA_BELL = "linabell"
 DUFFY = "duffy"
+STELLA = "stella"
 DEBUG_ENV = "FRIENDS_BAR_DEBUG"
 
 _CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -39,25 +40,53 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "codex": {
             "timeout_level": "standard",
             "retry_attempts": 1,
+            "use_session": True,
             "exec_mode": "safe",
         },
         "claude-minimax": {
             "timeout_level": "standard",
             "retry_attempts": 1,
+            "use_session": True,
             "permission_mode": "bypassPermissions",
             "include_partial_messages": False,
             "print_stderr": False,
+        },
+        "gemini": {
+            "timeout_level": "standard",
+            "retry_attempts": 1,
+            "use_session": True,
+            "adapter": "gemini-cli",
+            "auth_mode": "auto",
+            "approval_mode": "default",
+            "output_format": "stream-json",
+            "yolo": False,
+            "no_browser": False,
+            "proxy": "",
+            "no_proxy": "",
+            "print_stderr": False,
+            "mcp_callback_dir": ".gemini/mcp_bridge",
+            "mcp_poll_interval_s": 0.25,
+            "mcp_timeout_s": 300.0,
+            "mcp_cleanup_response": True,
         },
     },
     "friends_bar": {
         "name": "Friends Bar",
         "default_rounds": 4,
-        "start_agent": LINA_BELL,
+        "start_agent": DUFFY,
         "logging": {
             "enabled": True,
             "dir": ".friends-bar/logs",
             "include_prompt_preview": True,
             "max_preview_chars": 1200,
+        },
+        "history": {
+            "max_chars": 3000,
+            "field_max_chars": 400,
+            "evidence_limit": 3,
+            "issue_limit": 5,
+            "root_cause_limit": 3,
+            "include_key_changes": True,
         },
         "safety": {
             "read_only": False,
@@ -76,11 +105,19 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             },
             DUFFY: {
                 "provider": "claude-minimax",
-                "response_mode": "execute",
+                "response_mode": "text_only",
                 "provider_options": {
                     "permission_mode": "bypassPermissions",
                     "include_partial_messages": True,
                     "print_stderr": False,
+                },
+            },
+            STELLA: {
+                "provider": "gemini",
+                "response_mode": "execute",
+                "provider_options": {
+                    "adapter": "gemini-cli",
+                    "output_format": "stream-json",
                 },
             },
         },
@@ -163,10 +200,12 @@ def _normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(providers, dict):
         codex_cfg = providers.get("codex", {})
         if isinstance(codex_cfg, dict):
+            codex_cfg["use_session"] = bool(codex_cfg.get("use_session", True))
             codex_cfg["exec_mode"] = str(codex_cfg.get("exec_mode", "safe"))
 
         claude_cfg = providers.get("claude-minimax", {})
         if isinstance(claude_cfg, dict):
+            claude_cfg["use_session"] = bool(claude_cfg.get("use_session", True))
             claude_cfg["permission_mode"] = str(
                 claude_cfg.get("permission_mode", "bypassPermissions")
             )
@@ -174,6 +213,41 @@ def _normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
                 claude_cfg.get("include_partial_messages", False)
             )
             claude_cfg["print_stderr"] = bool(claude_cfg.get("print_stderr", False))
+
+        gemini_cfg = providers.get("gemini", {})
+        if isinstance(gemini_cfg, dict):
+            gemini_cfg["use_session"] = bool(gemini_cfg.get("use_session", True))
+            gemini_cfg["adapter"] = str(gemini_cfg.get("adapter", "gemini-cli"))
+            gemini_cfg["auth_mode"] = str(gemini_cfg.get("auth_mode", "auto"))
+            gemini_cfg["approval_mode"] = str(
+                gemini_cfg.get("approval_mode", "default")
+            )
+            gemini_cfg["output_format"] = str(
+                gemini_cfg.get("output_format", "stream-json")
+            )
+            gemini_cfg["yolo"] = bool(gemini_cfg.get("yolo", False))
+            gemini_cfg["no_browser"] = bool(gemini_cfg.get("no_browser", False))
+            gemini_cfg["proxy"] = str(gemini_cfg.get("proxy", "")).strip()
+            gemini_cfg["no_proxy"] = str(gemini_cfg.get("no_proxy", "")).strip()
+            gemini_cfg["print_stderr"] = bool(gemini_cfg.get("print_stderr", False))
+            gemini_cfg["mcp_callback_dir"] = str(
+                gemini_cfg.get("mcp_callback_dir", ".gemini/mcp_bridge")
+            )
+            try:
+                gemini_cfg["mcp_poll_interval_s"] = float(
+                    gemini_cfg.get("mcp_poll_interval_s", 0.25)
+                )
+            except (TypeError, ValueError):
+                gemini_cfg["mcp_poll_interval_s"] = 0.25
+            try:
+                gemini_cfg["mcp_timeout_s"] = float(
+                    gemini_cfg.get("mcp_timeout_s", 300.0)
+                )
+            except (TypeError, ValueError):
+                gemini_cfg["mcp_timeout_s"] = 300.0
+            gemini_cfg["mcp_cleanup_response"] = bool(
+                gemini_cfg.get("mcp_cleanup_response", True)
+            )
 
     friends_bar = normalized.get("friends_bar", {})
     if isinstance(friends_bar, dict):
@@ -194,6 +268,36 @@ def _normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
         except (TypeError, ValueError):
             logging_cfg["max_preview_chars"] = 1200
         friends_bar["logging"] = logging_cfg
+
+        history_cfg = friends_bar.get("history", {})
+        if not isinstance(history_cfg, dict):
+            history_cfg = {}
+        try:
+            history_cfg["max_chars"] = int(history_cfg.get("max_chars", 3000))
+        except (TypeError, ValueError):
+            history_cfg["max_chars"] = 3000
+        try:
+            history_cfg["field_max_chars"] = int(history_cfg.get("field_max_chars", 400))
+        except (TypeError, ValueError):
+            history_cfg["field_max_chars"] = 400
+        try:
+            history_cfg["evidence_limit"] = int(history_cfg.get("evidence_limit", 3))
+        except (TypeError, ValueError):
+            history_cfg["evidence_limit"] = 3
+        try:
+            history_cfg["issue_limit"] = int(history_cfg.get("issue_limit", 5))
+        except (TypeError, ValueError):
+            history_cfg["issue_limit"] = 5
+        try:
+            history_cfg["root_cause_limit"] = int(
+                history_cfg.get("root_cause_limit", 3)
+            )
+        except (TypeError, ValueError):
+            history_cfg["root_cause_limit"] = 3
+        history_cfg["include_key_changes"] = bool(
+            history_cfg.get("include_key_changes", True)
+        )
+        friends_bar["history"] = history_cfg
 
         safety_cfg = friends_bar.get("safety", {})
         if not isinstance(safety_cfg, dict):
@@ -219,7 +323,7 @@ def _normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
         )
         friends_bar["safety"] = safety_cfg
 
-        start_agent = str(friends_bar.get("start_agent", LINA_BELL))
+        start_agent = str(friends_bar.get("start_agent", DUFFY))
         if normalize_agent_name is None:
             friends_bar["start_agent"] = start_agent
         else:
@@ -227,7 +331,7 @@ def _normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
                 friends_bar["start_agent"] = normalize_agent_name(start_agent)
             except ValueError as exc:
                 _debug_log(f"normalize start_agent failed: {exc}")
-                friends_bar["start_agent"] = LINA_BELL
+                friends_bar["start_agent"] = DUFFY
 
         raw_agents = friends_bar.get("agents", {})
         if not isinstance(raw_agents, dict):
