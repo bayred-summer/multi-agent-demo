@@ -1,4 +1,4 @@
-"""会话持久化工具。"""
+"""Persistent provider session store utilities."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-# 会话缓存放在项目目录下，做到“项目级隔离”。
 SESSION_FILE = Path.cwd() / ".sessions" / "session-store.json"
 DEBUG_ENV = "FRIENDS_BAR_DEBUG"
 
@@ -21,10 +20,7 @@ def _debug_log(message: str) -> None:
 
 
 def load_session_store() -> Dict[str, Any]:
-    """从磁盘读取会话缓存。
-
-    若文件不存在、JSON 损坏或类型不合法，则返回空字典。
-    """
+    """Load full session store from disk."""
     if not SESSION_FILE.exists():
         return {}
 
@@ -32,7 +28,6 @@ def load_session_store() -> Dict[str, Any]:
         raw = SESSION_FILE.read_text(encoding="utf-8")
         parsed = json.loads(raw)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        # 读取异常时走空缓存，避免影响主流程。
         _debug_log(f"load failed, fallback to empty store: {exc}")
         return {}
 
@@ -44,8 +39,7 @@ def load_session_store() -> Dict[str, Any]:
 
 
 def save_session_store(store: Dict[str, Any]) -> None:
-    """把完整会话缓存写回磁盘。"""
-    # 先确保父目录存在，再原子落盘（temp -> replace）。
+    """Atomically save full session store to disk."""
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(store, indent=2, ensure_ascii=False)
     tmp_file = SESSION_FILE.with_name(
@@ -64,7 +58,7 @@ def save_session_store(store: Dict[str, Any]) -> None:
 
 
 def get_session_id(provider: str) -> Optional[str]:
-    """读取某个 provider 对应的 session_id。"""
+    """Read one provider session id."""
     store = load_session_store()
     value = store.get(provider, {})
     if isinstance(value, dict):
@@ -75,11 +69,18 @@ def get_session_id(provider: str) -> Optional[str]:
 
 
 def set_session_id(provider: str, session_id: str) -> None:
-    """更新某个 provider 的 session_id 并写盘。"""
+    """Update one provider session id and save."""
     store = load_session_store()
     store[provider] = {
         "sessionId": session_id,
-        # 使用 UTC 时间，便于跨时区排查问题。
         "updatedAt": datetime.now(timezone.utc).isoformat(),
     }
     save_session_store(store)
+
+
+def clear_session_id(provider: str) -> None:
+    """Delete one provider session mapping."""
+    store = load_session_store()
+    if provider in store:
+        del store[provider]
+        save_session_store(store)

@@ -157,16 +157,25 @@ def invoke_codex(
     elif normalized_exec_mode != "safe":
         raise ValueError("exec_mode must be one of: safe, full_auto, bypass")
 
-    args = (
-        [*exec_prefix, "resume", *base_flags, session_id, prompt]
-        if session_id
-        else [*exec_prefix, *base_flags, prompt]
-    )
-    if sandbox_mode:
-        args += ["--sandbox", str(sandbox_mode)]
+    # codex exec resume has a stricter CLI surface than fresh exec:
+    # - it does not accept sandbox/full-auto/bypass flags in some versions.
+    # - keep resume arguments minimal and compatible.
+    if session_id:
+        # For resume, mode flags must be placed after `resume`.
+        resume_flags: List[str] = []
+        if normalized_exec_mode == "full_auto":
+            resume_flags.append("--full-auto")
+        elif normalized_exec_mode == "bypass":
+            resume_flags.append("--dangerously-bypass-approvals-and-sandbox")
+        args = ["exec", "resume", *resume_flags, *base_flags, session_id, prompt]
+    else:
+        args = [*exec_prefix, *base_flags, prompt]
+        if sandbox_mode:
+            args += ["--sandbox", str(sandbox_mode)]
 
     schema_temp_file: Optional[str] = None
-    if output_schema is not None:
+    # codex exec resume does not accept --output-schema in current CLI versions.
+    if output_schema is not None and not session_id:
         schema_path = ""
         if isinstance(output_schema, str):
             candidate = Path(output_schema)

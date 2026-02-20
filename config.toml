@@ -24,18 +24,18 @@ print_stderr = false
 
 [providers.gemini]
 timeout_level = "standard"
-retry_attempts = 0
+retry_attempts = 2
 use_session = true
 adapter = "gemini-cli"
 model = "gemini-3-pro-preview"
 auth_mode = "auto"
-approval_mode = "default"
+approval_mode = "auto_edit"
 output_format = "stream-json"
 yolo = false
 no_browser = false
 proxy = "http://127.0.0.1:7890"
 no_proxy = "localhost,127.0.0.1"
-print_stderr = false
+print_stderr = true
 mcp_callback_dir = ".gemini/mcp_bridge"
 mcp_poll_interval_s = 0.25
 mcp_timeout_s = 300.0
@@ -93,6 +93,8 @@ response_mode = "execute"
 [friends_bar.agents.stella.provider_options]
 adapter = "gemini-cli"
 output_format = "stream-json"
+approval_mode = "auto_edit"
+print_stderr = true
 
 # Timeout profiles
 [timeouts.quick]

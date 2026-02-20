@@ -291,6 +291,9 @@ def run_stream_process(
                         "provider": provider,
                         "pid": process.pid,
                         "command_repr": command_repr,
+                        "command": command,
+                        "args": list(args),
+                        "workdir": workdir,
                         "elapsed_ms": elapsed_ms(),
                     }
                 )

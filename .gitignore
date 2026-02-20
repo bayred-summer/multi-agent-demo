@@ -1,6 +1,7 @@
 # Runtime cache
 .sessions/
 config.local.toml
+tests/
 
 # Python
 __pycache__/

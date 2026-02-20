@@ -811,6 +811,14 @@ def run_two_agent_dialogue(
                 },
             )
             audit_logger.log(
+                "round.start",
+                {
+                    "turn": turn,
+                    "agent": current_agent,
+                    "peer_agent": peer_agent,
+                },
+            )
+            audit_logger.log(
                 "turn.started",
                 {
                     "turn": turn,
@@ -862,6 +870,15 @@ def run_two_agent_dialogue(
                         "attempt": attempt_count,
                         "agent": current_agent,
                         "chars": len(adjusted_prompt),
+                        "bytes": prompt_bytes,
+                    },
+                )
+                audit_logger.log(
+                    "prompt.bytes",
+                    {
+                        "turn": turn,
+                        "attempt": attempt_count,
+                        "agent": current_agent,
                         "bytes": prompt_bytes,
                     },
                 )
@@ -977,6 +994,12 @@ def run_two_agent_dialogue(
                     peer_agent=peer_agent,
                     trace_id=audit_logger.run_id,
                 )
+                parse_ok = not any(
+                    error.startswith("E_SCHEMA_INVALID_FORMAT") for error in protocol_errors
+                )
+                schema_ok = parse_ok and not any(
+                    error.startswith("E_SCHEMA_") for error in protocol_errors
+                )
                 audit_logger.log(
                     "protocol.validated",
                     {
@@ -984,6 +1007,8 @@ def run_two_agent_dialogue(
                         "attempt": attempt_count,
                         "agent": current_agent,
                         "is_valid": is_valid,
+                        "parse_ok": parse_ok,
+                        "schema_ok": schema_ok,
                         "errors": protocol_errors,
                         "validation_ms": int((time.monotonic() - validation_started) * 1000),
                         "attempt_elapsed_ms": int((time.monotonic() - attempt_started) * 1000),

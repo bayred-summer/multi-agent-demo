@@ -10,7 +10,7 @@ from src.providers.codex import invoke_codex
 from src.providers.gemini import invoke_gemini
 from src.utils.process_runner import ProcessExecutionError
 from src.utils.runtime_config import load_runtime_config
-from src.utils.session_store import get_session_id, set_session_id
+from src.utils.session_store import clear_session_id, get_session_id, set_session_id
 
 ProviderFn = Callable[..., Dict[str, Any]]
 
@@ -66,8 +66,28 @@ def _is_retryable_process_error(error: ProcessExecutionError) -> bool:
         "connection",
         "network",
         "rate limit",
+        "fetcherror",
+        "ssl",
+        "tls",
+        "econnreset",
+        "socket hang up",
     )
     return any(keyword in stderr_text for keyword in retry_keywords)
+
+
+def _is_stale_session_error(error: ProcessExecutionError) -> bool:
+    """Return True when provider rejects resume session id as invalid/not found."""
+    if error.reason != "nonzero_exit":
+        return False
+    stderr_text = " ".join(error.stderr_tail).lower()
+    stale_markers = (
+        "no conversation found with session id",
+        "session not found",
+        "invalid session",
+        "unknown session",
+        "resume id",
+    )
+    return any(marker in stderr_text for marker in stale_markers)
 
 
 def invoke(
@@ -174,6 +194,7 @@ def invoke(
     last_session_id = get_session_id(provider_name) if resolved_use_session else None
 
     attempt = 0
+    session_reset_attempted = False
     while True:
         try:
             result = provider(
@@ -191,6 +212,21 @@ def invoke(
             attempt_count = attempt
             break
         except ProcessExecutionError as error:
+            if (
+                resolved_use_session
+                and last_session_id
+                and not session_reset_attempted
+                and _is_stale_session_error(error)
+            ):
+                clear_session_id(provider_name)
+                last_session_id = None
+                session_reset_attempted = True
+                if resolved_stream:
+                    print(
+                        f"[session] provider={provider_name} stale session detected, "
+                        "cleared local resume id and retrying once",
+                    )
+                continue
             if attempt >= int(resolved_retry_attempts) or not _is_retryable_process_error(error):
                 raise
             wait_s = float(resolved_retry_backoff_s) * (2**attempt)
