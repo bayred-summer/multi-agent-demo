@@ -184,6 +184,7 @@ def run_stream_process(
     stream_stderr: bool,
     stderr_prefix: str,
     on_stdout_line: Callable[[str], None],
+    on_stderr_line: Optional[Callable[[str], None]] = None,
     on_process_start: Optional[Callable[[Dict[str, Any]], None]] = None,
     on_first_byte: Optional[Callable[[Dict[str, Any]], None]] = None,
     inherit_stdin: bool = False,
@@ -338,6 +339,12 @@ def run_stream_process(
                 if source == "stderr":
                     if line.strip():
                         stderr_lines.append(line.strip())
+                        if on_stderr_line is not None:
+                            try:
+                                on_stderr_line(line.strip())
+                            except Exception:
+                                # Logging hooks must not break main flow.
+                                pass
                         if stream_stderr:
                             print(f"{stderr_prefix}{line.strip()}", file=sys.stderr)
                 else:

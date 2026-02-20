@@ -242,7 +242,7 @@ def invoke(
     if resolved_use_session and isinstance(new_session_id, str) and new_session_id.strip():
         set_session_id(provider_name, new_session_id)
 
-    return {
+    response: Dict[str, Any] = {
         "cli": provider_name,
         "prompt": prompt,
         "text": result.get("text", ""),
@@ -253,5 +253,9 @@ def invoke(
         "run_id": run_id,
         "seed": seed,
     }
+    for extra_key in ("raw_stdout_lines", "raw_stderr_lines", "raw_events", "tool_trace"):
+        if extra_key in result:
+            response[extra_key] = result.get(extra_key)
+    return response
 
 

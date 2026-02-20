@@ -85,6 +85,66 @@ class TestProtocolContract(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertIsNotNone(payload)
 
+    def test_validate_agent_output_accepts_wrapped_json(self) -> None:
+        wrapped = (
+            "preface text\n"
+            + json.dumps(
+                {
+                    "schema_version": "friendsbar.review.v1",
+                    "status": "ok",
+                    "acceptance": "pass",
+                    "verification": [
+                        {"command": "read_file train.py", "result": "ok"},
+                        {"command": "read_file main.py", "result": "ok"},
+                    ],
+                    "root_cause": [],
+                    "issues": [],
+                    "gate": {"decision": "allow", "conditions": []},
+                    "next_question": "玲娜贝儿是否继续下一步？",
+                    "warnings": [],
+                    "errors": [],
+                },
+                ensure_ascii=False,
+            )
+            + "\ntrailing text"
+        )
+        ok, errors, parsed, payload = _validate_agent_output(
+            current_agent=STELLA,
+            output=wrapped,
+            peer_agent=LINA_BELL,
+            trace_id="trace-wrapped-json",
+        )
+        self.assertTrue(ok, msg=str(errors))
+        self.assertIsNotNone(parsed)
+        self.assertIsNotNone(payload)
+
+    def test_validate_agent_output_adapts_review_markdown(self) -> None:
+        markdown_review = """
+### [验收结论]
+有条件通过
+### [核验清单]
+- 模块划分清晰
+- 边界校验存在
+### [根因链]
+1. 参数命名存在不一致
+### [问题清单]
+- P2: 建议补充类型注解
+### [回归门禁]
+- 运行 pytest -q
+"""
+        ok, errors, parsed, payload = _validate_agent_output(
+            current_agent=STELLA,
+            output=markdown_review,
+            peer_agent=DUFFY,
+            trace_id="trace-markdown-adapt",
+        )
+        self.assertTrue(ok, msg=str(errors))
+        assert isinstance(parsed, dict)
+        self.assertEqual(parsed.get("schema_version"), "friendsbar.review.v1")
+        self.assertEqual(parsed.get("acceptance"), "conditional")
+        self.assertGreaterEqual(len(parsed.get("verification", [])), 2)
+        self.assertIsInstance(payload, dict)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -368,7 +368,7 @@ def validate_json_protocol_content(
             _append_error(
                 errors,
                 err.E_REVIEW_EVIDENCE_MISSING,
-                "review requires at least two command/result verification entries",
+                "review requires at least two verification evidence entries (command/result)",
             )
 
         issues = payload.get("issues")

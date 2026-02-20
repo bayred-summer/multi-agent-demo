@@ -135,6 +135,34 @@ class TestInvokeProviderDefaults(unittest.TestCase):
             self.assertEqual(captured.get("proxy"), "http://127.0.0.1:7890")
             self.assertEqual(captured.get("no_proxy"), "localhost,127.0.0.1")
 
+    def test_provider_options_include_gemini_include_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.toml"
+            config_path.write_text(
+                textwrap.dedent(
+                    """
+                    [providers.gemini]
+                    include_directories = ["E:\\\\PythonProjects\\\\test_project1"]
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            captured: dict[str, object] = {}
+
+            def fake_provider(**kwargs):
+                captured.update(kwargs)
+                return {"text": "ok", "session_id": None, "elapsed_ms": 1}
+
+            with patch("src.invoke.PROVIDERS", {"gemini": fake_provider}):
+                invoke("gemini", "ping", config_path=str(config_path))
+
+            self.assertEqual(
+                captured.get("include_directories"),
+                ["E:\\PythonProjects\\test_project1"],
+            )
+
     def test_claude_stale_session_auto_clears_and_retries_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "config.toml"

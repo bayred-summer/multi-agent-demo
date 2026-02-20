@@ -13,6 +13,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    genai = None
+    types = None
+
 from src.utils.process_runner import (
     ProcessExecutionError,
     resolve_timeout_config,
@@ -22,6 +29,7 @@ from src.utils.process_runner import (
 GEMINI_ADAPTER_ENV = "GEMINI_ADAPTER"
 GEMINI_ADAPTER_CLI = "gemini-cli"
 GEMINI_ADAPTER_ANTIGRAVITY = "antigravity"
+GEMINI_ADAPTER_SDK = "google-genai"
 
 
 def resolve_gemini_command() -> str:
@@ -87,7 +95,14 @@ def _pick_final_text(state: Dict[str, Any]) -> str:
     stream_text = "".join(state.get("output_parts", []))
     if isinstance(response_text, str) and response_text.strip():
         return response_text
-    return stream_text
+    if isinstance(stream_text, str) and stream_text.strip():
+        return stream_text
+    raw_lines = state.get("raw_stdout_lines", [])
+    if isinstance(raw_lines, list):
+        fallback = "\n".join(str(line) for line in raw_lines if str(line).strip())
+        if fallback.strip():
+            return fallback
+    return ""
 
 
 def _normalize_auth_mode(auth_mode: Optional[str]) -> str:
@@ -134,11 +149,14 @@ def _resolve_adapter(adapter: Optional[str]) -> str:
         "antigravity": GEMINI_ADAPTER_ANTIGRAVITY,
         "antigravity-mcp": GEMINI_ADAPTER_ANTIGRAVITY,
         "mcp": GEMINI_ADAPTER_ANTIGRAVITY,
+        "google-genai": GEMINI_ADAPTER_SDK,
+        "sdk": GEMINI_ADAPTER_SDK,
+        "genai": GEMINI_ADAPTER_SDK,
     }
     if raw not in alias_map:
         raise ValueError(
-            "adapter must be one of: gemini-cli, antigravity "
-            "(or aliases: cli, gemini_cli, antigravity-mcp, mcp)"
+            "adapter must be one of: gemini-cli, antigravity, google-genai "
+            "(or aliases: cli, gemini_cli, antigravity-mcp, mcp, sdk, genai)"
         )
     return alias_map[raw]
 
@@ -184,14 +202,60 @@ def _build_cli_env(
         if resolved_no_proxy is None:
             fallback = proc_env.get("NO_PROXY") or proc_env.get("no_proxy")
             if not fallback:
-                proc_env["NO_PROXY"] = "localhost,127.0.0.1"
-                proc_env["no_proxy"] = "localhost,127.0.0.1"
+                fallback = "localhost,127.0.0.1"
+            proc_env["NO_PROXY"] = fallback
+            proc_env["no_proxy"] = fallback
 
     if resolved_no_proxy is not None:
         proc_env["NO_PROXY"] = resolved_no_proxy
         proc_env["no_proxy"] = resolved_no_proxy
 
     return proc_env
+
+
+def _append_proxy_args(
+    args: List[str],
+    *,
+    proxy: Optional[str],
+    no_proxy: Optional[str],
+    proxy_args: bool,
+) -> List[str]:
+    """Append gemini-cli proxy flags when configured."""
+    if not proxy_args:
+        return args
+    resolved_proxy = _strip_optional_text(proxy)
+    resolved_no_proxy = _strip_optional_text(no_proxy)
+    if resolved_proxy:
+        args += ["--proxy", resolved_proxy]
+    if resolved_no_proxy:
+        args += ["--no-proxy", resolved_no_proxy]
+    return args
+
+
+def _resolve_include_directories(
+    *,
+    workdir: Optional[str],
+    include_directories: Optional[List[str]],
+) -> List[str]:
+    """Build stable, deduplicated include directory list."""
+    ordered: List[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: Optional[str]) -> None:
+        text = _strip_optional_text(raw)
+        if not text:
+            return
+        key = os.path.normcase(os.path.abspath(text))
+        if key in seen:
+            return
+        seen.add(key)
+        ordered.append(text)
+
+    _add(workdir)
+    if include_directories:
+        for item in include_directories:
+            _add(str(item))
+    return ordered
 
 
 def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -342,6 +406,127 @@ def _invoke_antigravity_callback(
         time.sleep(interval)
 
 
+def _invoke_gemini_sdk(
+    *,
+    prompt: str,
+    session_id: Optional[str],
+    stream: bool,
+    model: Optional[str],
+    auth_mode: Optional[str],
+    proxy: Optional[str],
+    allowed_tools: Optional[List[str]],
+    json_schema: Optional[Dict[str, Any]] = None,
+    event_hook: Optional[Callable[[str, Dict[str, Any]], None]],
+    timeout_level: str,
+    max_timeout_s: Optional[float],
+) -> Dict[str, Any]:
+    """Invoke Gemini using google-genai SDK v1."""
+    if genai is None:
+        raise ImportError(
+            "google-genai package is not installed. Please install it with 'pip install google-genai'."
+        )
+
+    started = time.monotonic()
+    resolved_auth_mode = _normalize_auth_mode(auth_mode)
+    _validate_auth_prerequisites(resolved_auth_mode)
+
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT_ID")
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION")
+
+    client_kwargs: Dict[str, Any] = {}
+    if resolved_auth_mode == "vertex":
+        client_kwargs["vertex"] = True
+        client_kwargs["project"] = project
+        client_kwargs["location"] = location
+    elif api_key:
+        client_kwargs["api_key"] = api_key
+
+    resolved_proxy = _strip_optional_text(proxy)
+    if resolved_proxy:
+        client_kwargs["http_options"] = {"proxy": resolved_proxy}
+
+    client = genai.Client(**client_kwargs)
+    resolved_model = model or "gemini-2.0-flash"
+
+    sdk_tools = []
+    if allowed_tools:
+        for tool in allowed_tools:
+            if tool == "google_search":
+                sdk_tools.append(types.Tool(google_search_retrieval=types.GoogleSearchRetrieval()))
+            elif tool == "code_execution":
+                sdk_tools.append(types.Tool(code_execution=types.CodeExecution()))
+
+    generate_config = types.GenerateContentConfig(
+        tools=sdk_tools if sdk_tools else None,
+        response_mime_type="application/json" if json_schema else None,
+        response_schema=json_schema,
+    )
+
+    _emit_event(
+        event_hook,
+        "sdk.request_started",
+        {
+            "provider": "gemini",
+            "adapter": GEMINI_ADAPTER_SDK,
+            "model": resolved_model,
+            "auth_mode": resolved_auth_mode,
+            "stream": stream,
+            "allowed_tools": allowed_tools,
+        },
+    )
+
+    # Note: session_id / resume is not directly supported in SDK v1 generate_content 
+    # without passing history. For now, we perform a single-turn generation.
+    try:
+        if stream:
+            response_text = ""
+            for chunk in client.models.generate_content_stream(
+                model=resolved_model, contents=prompt, config=generate_config
+            ):
+                # Handle text from candidates
+                if chunk.candidates:
+                    for candidate in chunk.candidates:
+                        if candidate.content and candidate.content.parts:
+                            for part in candidate.content.parts:
+                                if part.text:
+                                    response_text += part.text
+                                    print(part.text, end="", flush=True)
+            print("")
+        else:
+            response = client.models.generate_content(
+                model=resolved_model, contents=prompt, config=generate_config
+            )
+            response_text = response.text
+    except Exception as exc:
+        elapsed = int((time.monotonic() - started) * 1000)
+        raise ProcessExecutionError(
+            provider="gemini",
+            reason="sdk_error",
+            command_repr=f"google-genai:{resolved_model}",
+            elapsed_ms=elapsed,
+            extra_message=str(exc),
+        ) from exc
+
+    elapsed = int((time.monotonic() - started) * 1000)
+    _emit_event(
+        event_hook,
+        "sdk.request_finished",
+        {
+            "provider": "gemini",
+            "adapter": GEMINI_ADAPTER_SDK,
+            "elapsed_ms": elapsed,
+        },
+    )
+
+    return {
+        "provider": "gemini",
+        "text": response_text,
+        "session_id": session_id,  # Pass through as SDK v1 doesn't return a simple serializable session ID
+        "elapsed_ms": elapsed,
+    }
+
+
 def _invoke_gemini_cli(
     *,
     prompt: str,
@@ -359,6 +544,8 @@ def _invoke_gemini_cli(
     no_browser: Optional[bool],
     proxy: Optional[str],
     no_proxy: Optional[str],
+    proxy_args: bool,
+    include_directories: Optional[List[str]],
     print_stderr: bool,
     event_hook: Optional[Callable[[str, Dict[str, Any]], None]],
     timeout_level: str,
@@ -390,6 +577,32 @@ def _invoke_gemini_cli(
             args += ["--allowed-tools", str(tool)]
     if raw_output:
         args += ["--raw-output", "--accept-raw-output-risk"]
+    for include_dir in _resolve_include_directories(
+        workdir=workdir, include_directories=include_directories
+    ):
+        args += ["--include-directories", include_dir]
+
+    args = _append_proxy_args(
+        args, proxy=proxy, no_proxy=no_proxy, proxy_args=bool(proxy_args)
+    )
+
+    _emit_event(
+        event_hook,
+        "adapter.args_resolved",
+        {
+            "provider": "gemini",
+            "adapter": GEMINI_ADAPTER_CLI,
+            "command": gemini_command,
+            "args": list(args),
+            "proxy": _strip_optional_text(proxy),
+            "no_proxy": _strip_optional_text(no_proxy),
+            "proxy_args": bool(proxy_args),
+            "include_directories": _resolve_include_directories(
+                workdir=workdir,
+                include_directories=include_directories,
+            ),
+        },
+    )
 
     proc_env = _build_cli_env(
         no_browser=no_browser,
@@ -405,9 +618,35 @@ def _invoke_gemini_cli(
         "printed_any": False,
         "needs_newline": False,
         "saw_delta": False,
+        "raw_stdout_lines": [],
+        "raw_events": [],
+        "tool_trace": [],
+        "raw_stderr_lines": [],
     }
 
+    def _record_stderr_line(line: str) -> None:
+        state["raw_stderr_lines"].append(line)
+        _emit_event(
+            event_hook,
+            "provider.raw_stderr_line",
+            {
+                "provider": "gemini",
+                "line": line,
+            },
+        )
+
     def on_stdout_line(line: str) -> None:
+        if isinstance(line, str) and line.strip():
+            state["raw_stdout_lines"].append(line)
+            _emit_event(
+                event_hook,
+                "provider.raw_stdout_line",
+                {
+                    "provider": "gemini",
+                    "line": line,
+                },
+            )
+
         if fmt == "json":
             state["json_buffer"].append(line)
             raw = "\n".join(state["json_buffer"]).strip()
@@ -436,7 +675,36 @@ def _invoke_gemini_cli(
             try:
                 event = json.loads(trimmed)
             except json.JSONDecodeError:
+                _emit_event(
+                    event_hook,
+                    "provider.stream_json_decode_error",
+                    {
+                        "provider": "gemini",
+                        "line": trimmed,
+                    },
+                )
                 return
+            state["raw_events"].append(event)
+            event_type = event.get("type")
+            if event_type == "tool_use":
+                tool_payload = {
+                    "provider": "gemini",
+                    "tool_name": event.get("tool_name"),
+                    "tool_id": event.get("tool_id"),
+                    "parameters": event.get("parameters"),
+                }
+                state["tool_trace"].append({"type": "tool_use", **tool_payload})
+                _emit_event(event_hook, "provider.tool_use", tool_payload)
+            elif event_type == "tool_result":
+                tool_payload = {
+                    "provider": "gemini",
+                    "tool_id": event.get("tool_id"),
+                    "status": event.get("status"),
+                    "output": _text_from_value(event.get("output")),
+                    "error": event.get("error"),
+                }
+                state["tool_trace"].append({"type": "tool_result", **tool_payload})
+                _emit_event(event_hook, "provider.tool_result", tool_payload)
             text = _extract_assistant_text(event, state)
             if not text:
                 return
@@ -471,13 +739,14 @@ def _invoke_gemini_cli(
             stream_stderr=bool(print_stderr and stream),
             stderr_prefix="[gemini stderr] ",
             on_stdout_line=on_stdout_line,
+            on_stderr_line=_record_stderr_line,
             on_process_start=lambda payload: _emit_event(
                 event_hook, "subprocess.started", payload
             ),
             on_first_byte=lambda payload: _emit_event(
                 event_hook, "subprocess.first_byte", payload
             ),
-            inherit_stdin=True,
+            inherit_stdin=False,
         )
     except ProcessExecutionError as exc:
         stderr_lower = " ".join(exc.stderr_tail).lower()
@@ -507,6 +776,10 @@ def _invoke_gemini_cli(
         "text": _pick_final_text(state),
         "session_id": state.get("session_id"),
         "elapsed_ms": result.elapsed_ms,
+        "raw_stdout_lines": state.get("raw_stdout_lines", []),
+        "raw_stderr_lines": state.get("raw_stderr_lines", []),
+        "raw_events": state.get("raw_events", []),
+        "tool_trace": state.get("tool_trace", []),
     }
 
 
@@ -522,11 +795,14 @@ def invoke_gemini(
     yolo: bool = False,
     allowed_tools: Optional[List[str]] = None,
     output_format: Optional[str] = None,
+    json_schema: Optional[Dict[str, Any]] = None,
     raw_output: bool = False,
     auth_mode: Optional[str] = None,
     no_browser: Optional[bool] = None,
     proxy: Optional[str] = None,
     no_proxy: Optional[str] = None,
+    proxy_args: bool = False,
+    include_directories: Optional[List[str]] = None,
     print_stderr: bool = False,
     adapter: Optional[str] = None,
     mcp_callback_dir: Optional[str] = None,
@@ -568,6 +844,21 @@ def invoke_gemini(
             cleanup_response=bool(mcp_cleanup_response),
         )
 
+    if selected_adapter == GEMINI_ADAPTER_SDK:
+        return _invoke_gemini_sdk(
+            prompt=prompt,
+            session_id=session_id,
+            stream=stream,
+            model=model,
+            auth_mode=auth_mode,
+            proxy=proxy,
+            allowed_tools=allowed_tools,
+            json_schema=json_schema,
+            event_hook=event_hook,
+            timeout_level=timeout_level,
+            max_timeout_s=max_timeout_s,
+        )
+
     return _invoke_gemini_cli(
         prompt=prompt,
         session_id=session_id,
@@ -584,6 +875,8 @@ def invoke_gemini(
         no_browser=no_browser,
         proxy=proxy,
         no_proxy=no_proxy,
+        proxy_args=proxy_args,
+        include_directories=include_directories,
         print_stderr=print_stderr,
         event_hook=event_hook,
         timeout_level=timeout_level,

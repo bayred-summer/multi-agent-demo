@@ -164,15 +164,157 @@ def _validate_agent_output(
     if not raw:
         return False, ["E_SCHEMA_INVALID_FORMAT: empty output"], None, None
 
+    def _extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
+        decoder = json.JSONDecoder()
+        for idx, ch in enumerate(text):
+            if ch != "{":
+                continue
+            try:
+                obj, _ = decoder.raw_decode(text[idx:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                return obj
+        return None
+
+    def _clean_markdown_line(line: str) -> str:
+        cleaned = line.strip()
+        if not cleaned:
+            return ""
+        cleaned = re.sub(r"^\s*[-*]\s*", "", cleaned)
+        cleaned = re.sub(r"^\s*\d+[.)]\s*", "", cleaned)
+        cleaned = cleaned.strip()
+        return cleaned
+
+    def _adapt_review_plain_text(text: str, peer: str) -> Optional[Dict[str, Any]]:
+        section_pattern = re.compile(
+            r"^\s*(?:#{1,6}\s*)?\[(验收结论|核验清单|根因链|问题清单|回归门禁)\]\s*$"
+        )
+        sections: Dict[str, List[str]] = {
+            "验收结论": [],
+            "核验清单": [],
+            "根因链": [],
+            "问题清单": [],
+            "回归门禁": [],
+        }
+        current_section: Optional[str] = None
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            matched = section_pattern.match(line)
+            if matched:
+                current_section = matched.group(1)
+                continue
+            if current_section:
+                sections[current_section].append(line)
+
+        if not any(sections.values()):
+            return None
+
+        acceptance_text = " ".join(sections["验收结论"]).lower()
+        if any(token in acceptance_text for token in ("不通过", "fail", "block")):
+            acceptance = "fail"
+            status = "failed"
+            gate_decision = "block"
+        elif any(token in acceptance_text for token in ("有条件", "建议改进", "conditional")):
+            acceptance = "conditional"
+            status = "partial"
+            gate_decision = "conditional"
+        else:
+            acceptance = "pass"
+            status = "ok"
+            gate_decision = "allow"
+
+        verification_lines = [
+            _clean_markdown_line(line) for line in sections["核验清单"] if _clean_markdown_line(line)
+        ]
+        verification: List[Dict[str, str]] = []
+        for idx, line in enumerate(verification_lines[:2], start=1):
+            verification.append(
+                {
+                    "command": f"static_review_evidence_{idx}",
+                    "result": line,
+                }
+            )
+        while len(verification) < 2:
+            verification.append(
+                {
+                    "command": f"static_review_evidence_{len(verification) + 1}",
+                    "result": "insufficient explicit evidence in plain-text output",
+                }
+            )
+
+        root_cause = [
+            _clean_markdown_line(line)
+            for line in sections["根因链"]
+            if _clean_markdown_line(line)
+        ][:6]
+
+        issue_lines = [
+            _clean_markdown_line(line)
+            for line in sections["问题清单"]
+            if _clean_markdown_line(line)
+        ]
+        issues: List[Dict[str, Any]] = []
+        for idx, line in enumerate(issue_lines[:8], start=1):
+            severity = "P2"
+            severity_match = re.search(r"\b(P0|P1|P2)\b", line, flags=re.IGNORECASE)
+            if severity_match:
+                severity = severity_match.group(1).upper()
+            if line.startswith("|"):
+                parts = [item.strip() for item in line.strip("|").split("|")]
+                if len(parts) >= 3:
+                    line = parts[2] or line
+            issues.append(
+                {
+                    "id": f"ISSUE-{idx:03d}",
+                    "severity": severity,
+                    "summary": line,
+                }
+            )
+
+        gate_conditions = [
+            _clean_markdown_line(line)
+            for line in sections["回归门禁"]
+            if _clean_markdown_line(line)
+        ][:8]
+
+        peer_display = display_agent_name(peer)
+        next_question = f"{peer_display}，是否需要我把以上评审项整理为可执行修复清单？"
+
+        return {
+            "schema_version": REVIEW_SCHEMA_VERSION,
+            "status": status,
+            "acceptance": acceptance,
+            "verification": verification,
+            "root_cause": root_cause,
+            "issues": issues,
+            "gate": {
+                "decision": gate_decision,
+                "conditions": gate_conditions,
+            },
+            "next_question": next_question,
+            "warnings": [
+                "auto_adapted_from_plain_text_review",
+            ],
+            "errors": [],
+        }
+
+    payload: Optional[Dict[str, Any]]
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        return (
-            False,
-            [f"E_SCHEMA_INVALID_FORMAT: output is not valid JSON ({exc.msg})"],
-            None,
-            None,
-        )
+        payload = _extract_first_json_object(raw)
+        if payload is None and current_agent == STELLA:
+            payload = _adapt_review_plain_text(raw, peer_agent)
+        if payload is None:
+            return (
+                False,
+                [f"E_SCHEMA_INVALID_FORMAT: output is not valid JSON ({exc.msg})"],
+                None,
+                None,
+            )
 
     if not isinstance(payload, dict):
         return (
@@ -546,9 +688,13 @@ def _build_turn_prompt(
 
     role_guard = ""
     if current_agent == STELLA:
+        mode_instruction = (
+            "当前为静态评审模式：你可以调用只读工具（如 read_file/list_directory/grep_search）收集证据；"
+            "禁止执行 shell 命令（如 python/pytest）和禁止修改/删除文件。"
+        )
         role_guard = (
             "角色硬约束：你是评审官，不是实现者。"
-            "必须先执行只读/测试命令再评审，verification 至少包含2条命令证据。"
+            "请基于静态证据完成评审，verification 至少包含2条证据（command/result 格式，可写 read_file/grep_search）。"
         )
     elif current_agent == DUFFY:
         role_guard = (
@@ -946,6 +1092,8 @@ def run_two_agent_dialogue(
                     provider_options["json_schema"] = agent_schema
                 if AGENTS[current_agent].provider == "codex":
                     provider_options["output_schema"] = agent_schema
+                if AGENTS[current_agent].provider == "gemini":
+                    provider_options["json_schema"] = agent_schema
 
                 try:
                     def event_hook(event: str, payload: Dict[str, Any]) -> None:
@@ -958,6 +1106,33 @@ def run_two_agent_dialogue(
                                 **payload,
                             },
                         )
+                        if not stream or current_agent != STELLA:
+                            return
+                        if event == "provider.raw_stdout_line":
+                            line = str(payload.get("line", "")).strip()
+                            if line:
+                                _safe_print(f"[星黛露 raw] {line}")
+                            return
+                        if event == "provider.tool_use":
+                            tool_name = str(payload.get("tool_name", "")).strip() or "unknown"
+                            parameters = payload.get("parameters")
+                            if isinstance(parameters, dict) and parameters.get("file_path"):
+                                _safe_print(
+                                    f"[星黛露] 调用工具 `{tool_name}` 读取文件: {parameters.get('file_path')}"
+                                )
+                            else:
+                                _safe_print(f"[星黛露] 调用工具 `{tool_name}`")
+                            return
+                        if event == "provider.tool_result":
+                            status = str(payload.get("status", "")).strip() or "unknown"
+                            tool_id = str(payload.get("tool_id", "")).strip()
+                            if status.lower() == "error":
+                                error_msg = payload.get("error")
+                                _safe_print(
+                                    f"[星黛露] 工具结果失败 ({tool_id}): {error_msg}"
+                                )
+                            else:
+                                _safe_print(f"[星黛露] 工具结果成功 ({tool_id})")
 
                     result = invoke(
                         current_agent,
@@ -1053,12 +1228,20 @@ def run_two_agent_dialogue(
                     break
 
                 schema = build_agent_output_schema(current_agent)
+                previous_output_hint = ""
+                if raw_text:
+                    previous_output_hint = (
+                        "你上一条原始输出如下，请在不改变其结论的前提下仅转换为合法 JSON：\n"
+                        + _truncate_text(raw_text, 2000)
+                        + "\n"
+                    )
                 extra_instruction = (
                     "你上一条输出没有通过 JSON Schema 校验："
                     + " / ".join(protocol_errors)
                     + "。请在不改变任务目标的前提下输出一个合法 JSON 对象。\n"
-                    "禁止输出任何 JSON 之外文本；首字符必须是 {，末字符必须是 }。\n"
-                    "请严格匹配以下 schema：\n"
+                    + "禁止输出任何 JSON 之外文本；首字符必须是 {，末字符必须是 }。\n"
+                    + previous_output_hint
+                    + "请严格匹配以下 schema：\n"
                     + json.dumps(schema, ensure_ascii=False, indent=2)
                 )
 
@@ -1167,7 +1350,7 @@ def run_two_agent_dialogue(
         },
     }
     if stream and result_payload["log"]["log_file"]:
-        print(f"\n[system] 鏈鏃ュ織鏂囦欢: {result_payload['log']['log_file']}")
+        _safe_print(f"\n[system] Log file: {result_payload['log']['log_file']}")
     return result_payload
 
 

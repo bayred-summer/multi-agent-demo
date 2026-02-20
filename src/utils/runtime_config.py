@@ -63,6 +63,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "no_browser": False,
             "proxy": "",
             "no_proxy": "",
+            "proxy_args": False,
+            "include_directories": [],
             "print_stderr": False,
             "mcp_callback_dir": ".gemini/mcp_bridge",
             "mcp_poll_interval_s": 0.25,
@@ -229,6 +231,18 @@ def _normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
             gemini_cfg["no_browser"] = bool(gemini_cfg.get("no_browser", False))
             gemini_cfg["proxy"] = str(gemini_cfg.get("proxy", "")).strip()
             gemini_cfg["no_proxy"] = str(gemini_cfg.get("no_proxy", "")).strip()
+            gemini_cfg["proxy_args"] = bool(gemini_cfg.get("proxy_args", False))
+            raw_include_dirs = gemini_cfg.get("include_directories", [])
+            if isinstance(raw_include_dirs, str):
+                raw_include_dirs = [raw_include_dirs]
+            if isinstance(raw_include_dirs, (list, tuple, set)):
+                gemini_cfg["include_directories"] = [
+                    str(item).strip()
+                    for item in raw_include_dirs
+                    if str(item).strip()
+                ]
+            else:
+                gemini_cfg["include_directories"] = []
             gemini_cfg["print_stderr"] = bool(gemini_cfg.get("print_stderr", False))
             gemini_cfg["mcp_callback_dir"] = str(
                 gemini_cfg.get("mcp_callback_dir", ".gemini/mcp_bridge")
