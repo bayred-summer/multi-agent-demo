@@ -123,6 +123,50 @@ def _command_policy_errors(
     return errors
 
 
+def _verify_delivery_deliverables(
+    delivery_content: Dict[str, Any],
+    *,
+    workdir: str,
+) -> List[str]:
+    """Verify delivery deliverables exist within workdir."""
+    errors: List[str] = []
+    result = delivery_content.get("result", {}) if isinstance(delivery_content.get("result"), dict) else {}
+    deliverables = result.get("deliverables", [])
+    if not isinstance(deliverables, list):
+        return ["E_DELIVERY_INVALID_DELIVERABLES: deliverables must be list"]
+    workdir_path = Path(workdir)
+
+    for idx, item in enumerate(deliverables, start=1):
+        if not isinstance(item, dict):
+            errors.append(f"E_DELIVERY_INVALID_DELIVERABLES: item {idx} must be object")
+            continue
+        path_value = item.get("path")
+        if not isinstance(path_value, str) or not path_value.strip():
+            errors.append(f"E_DELIVERY_INVALID_DELIVERABLES: item {idx} missing path")
+            continue
+        raw_path = Path(path_value)
+        resolved_path = raw_path if raw_path.is_absolute() else (workdir_path / raw_path)
+        try:
+            resolved_path = resolved_path.resolve()
+        except OSError:
+            errors.append(f"E_DELIVERY_INVALID_DELIVERABLES: item {idx} invalid path {path_value}")
+            continue
+        if not _path_within(resolved_path, workdir_path):
+            errors.append(f"E_DELIVERY_OUTSIDE_WORKDIR: {path_value}")
+            continue
+        kind = str(item.get("kind", "")).strip().lower()
+        if not resolved_path.exists():
+            errors.append(f"E_DELIVERY_MISSING_DELIVERABLE: {path_value}")
+            continue
+        if kind == "dir" and not resolved_path.is_dir():
+            errors.append(f"E_DELIVERY_EXPECT_DIR: {path_value}")
+            continue
+        if kind in {"file", ""} and not resolved_path.is_file():
+            errors.append(f"E_DELIVERY_EXPECT_FILE: {path_value}")
+            continue
+    return errors
+
+
 def _dump_prompt(
     *,
     prompt: str,
@@ -381,6 +425,7 @@ def _summarize_delivery(
     """Summarize delivery payload for history injection."""
     result = content.get("result", {}) if isinstance(content.get("result"), dict) else {}
     evidence = result.get("execution_evidence", [])
+    deliverables = result.get("deliverables", [])
     summarized_evidence: List[str] = []
     if isinstance(evidence, list):
         for item in evidence[: max(0, evidence_limit)]:
@@ -390,6 +435,18 @@ def _summarize_delivery(
             res = _truncate_text(str(item.get("result", "")), field_max_chars)
             if cmd or res:
                 summarized_evidence.append(f"{cmd} => {res}".strip())
+    summarized_deliverables: List[str] = []
+    if isinstance(deliverables, list):
+        for item in deliverables[: max(0, evidence_limit)]:
+            if not isinstance(item, dict):
+                continue
+            path_value = _truncate_text(str(item.get("path", "")), field_max_chars)
+            kind_value = _truncate_text(str(item.get("kind", "")), field_max_chars)
+            summary_value = _truncate_text(str(item.get("summary", "")), field_max_chars)
+            if path_value:
+                suffix = f" ({kind_value})" if kind_value else ""
+                note = f": {summary_value}" if summary_value else ""
+                summarized_deliverables.append(f"{path_value}{suffix}{note}".strip())
     return {
         "turn": turn,
         "status": content.get("status"),
@@ -400,6 +457,7 @@ def _summarize_delivery(
             str(result.get("implementation_plan", "")), field_max_chars
         ),
         "execution_evidence": summarized_evidence,
+        "deliverables": summarized_deliverables,
         "risks_and_rollback": _truncate_text(
             str(result.get("risks_and_rollback", "")), field_max_chars
         ),
@@ -514,6 +572,7 @@ def _extract_key_changes(
     if delivery:
         result = delivery.get("result", {}) if isinstance(delivery.get("result"), dict) else {}
         evidence = result.get("execution_evidence", [])
+        deliverables = result.get("deliverables", [])
         if isinstance(evidence, list):
             for item in evidence[: max(0, evidence_limit)]:
                 if not isinstance(item, dict):
@@ -522,6 +581,13 @@ def _extract_key_changes(
                 res = _truncate_text(str(item.get("result", "")), field_max_chars)
                 if cmd or res:
                     key_changes.append(f"evidence: {cmd} => {res}".strip())
+        if isinstance(deliverables, list):
+            for item in deliverables[: max(0, evidence_limit)]:
+                if not isinstance(item, dict):
+                    continue
+                path_value = _truncate_text(str(item.get("path", "")), field_max_chars)
+                if path_value:
+                    key_changes.append(f"deliverable: {path_value}")
     if review:
         issues = review.get("issues", [])
         if isinstance(issues, list):
@@ -660,6 +726,7 @@ def _build_turn_prompt(
     transcript: List[Dict[str, Any]],
     history_cfg: Dict[str, Any],
     extra_instruction: Optional[str] = None,
+    prompt_dir: Optional[str] = None,
     read_only: bool = False,
 ) -> str:
     """Build one turn prompt for current agent."""
@@ -720,6 +787,53 @@ def _build_turn_prompt(
     if read_only:
         safety_note = "安全约束：只允许只读操作，禁止写入/删除/修改文件。\n"
 
+    base_dir = Path(prompt_dir or "prompts")
+    system_path = base_dir / "system.md"
+    if current_agent == DUFFY:
+        agent_template = base_dir / "duffy_plan.md"
+    elif current_agent == STELLA:
+        agent_template = base_dir / "stella_review.md"
+    else:
+        agent_template = base_dir / "linabell_delivery.md"
+
+    def _read_template(path: Path) -> str:
+        if not path.exists():
+            return ""
+        text = path.read_text(encoding="utf-8", errors="replace")
+        return text.lstrip("\ufeff")
+
+    def _render_template(template: str, context: Dict[str, str]) -> str:
+        rendered = template
+        for key, value in context.items():
+            rendered = rendered.replace(f"{{{{{key}}}}}", value)
+        return rendered
+
+    context = {
+        "task_goal": turn_task_goal,
+        "user_request": user_request,
+        "workdir": workdir,
+        "mode_instruction": mode_instruction,
+        "history": history_text,
+        "peer_question_text": peer_question_text,
+        "agent_display": current_display,
+        "agent_id": current_agent,
+        "mission": mission,
+        "role_guard": role_guard,
+        "safety_note": safety_note,
+        "output_contract": output_contract,
+        "peer_display": peer_display,
+        "extra_instruction": extra_text,
+    }
+
+    system_template = _read_template(system_path)
+    agent_template_text = _read_template(agent_template)
+    combined = "\n\n".join(
+        part for part in (system_template, agent_template_text) if part.strip()
+    )
+    if combined:
+        return _render_template(combined, context)
+
+    # Fallback: previous inline prompt if templates are missing.
     return (
         f"任务目标：{turn_task_goal}\n"
         f"原始用户需求：{user_request}\n\n"
@@ -847,6 +961,7 @@ def run_two_agent_dialogue(
     project_path: Optional[str] = None,
     use_session: Optional[bool] = None,
     stream: bool = True,
+    stream_debug: bool = False,
     timeout_level: Optional[str] = "standard",
     config_path: str = "config.toml",
     seed: Optional[int] = None,
@@ -861,6 +976,7 @@ def run_two_agent_dialogue(
     friends_bar_config = runtime_config.get("friends_bar", {})
     if not isinstance(friends_bar_config, dict):
         friends_bar_config = {}
+    prompt_dir = friends_bar_config.get("prompt_dir", "prompts")
     safety_cfg = friends_bar_config.get("safety", {})
     if not isinstance(safety_cfg, dict):
         safety_cfg = {}
@@ -1006,6 +1122,7 @@ def run_two_agent_dialogue(
                     transcript=transcript,
                     history_cfg=history_cfg,
                     extra_instruction=extra_instruction,
+                    prompt_dir=str(prompt_dir) if prompt_dir else None,
                     read_only=bool(safety_cfg.get("read_only", False)),
                 )
                 prompt_bytes = len(adjusted_prompt.encode("utf-8"))
@@ -1106,7 +1223,7 @@ def run_two_agent_dialogue(
                                 **payload,
                             },
                         )
-                        if not stream or current_agent != STELLA:
+                        if not stream or not stream_debug or current_agent != STELLA:
                             return
                         if event == "provider.raw_stdout_line":
                             line = str(payload.get("line", "")).strip()
@@ -1201,6 +1318,34 @@ def run_two_agent_dialogue(
                     if safety_errors:
                         is_valid = False
                         protocol_errors = protocol_errors + safety_errors
+                    if (
+                        is_valid
+                        and current_agent == LINA_BELL
+                        and runtime_info.get("response_mode") == "execute"
+                        and not safety_cfg.get("read_only", False)
+                    ):
+                        delivery_errors = _verify_delivery_deliverables(
+                            parsed_content,
+                            workdir=resolved_workdir,
+                        )
+                        if delivery_errors:
+                            is_valid = False
+                            protocol_errors = protocol_errors + delivery_errors
+                            audit_logger.log(
+                                "delivery.verify",
+                                {
+                                    "turn": turn,
+                                    "attempt": attempt_count,
+                                    "agent": current_agent,
+                                    "workdir": resolved_workdir,
+                                    "deliverables": (
+                                        parsed_content.get("result", {}).get("deliverables", [])
+                                        if isinstance(parsed_content.get("result"), dict)
+                                        else []
+                                    ),
+                                    "errors": delivery_errors,
+                                },
+                            )
                 audit_logger.log(
                     "turn.attempt.completed",
                     {
@@ -1228,22 +1373,27 @@ def run_two_agent_dialogue(
                     break
 
                 schema = build_agent_output_schema(current_agent)
-                previous_output_hint = ""
-                if raw_text:
-                    previous_output_hint = (
-                        "你上一条原始输出如下，请在不改变其结论的前提下仅转换为合法 JSON：\n"
-                        + _truncate_text(raw_text, 2000)
-                        + "\n"
+                repair_path = Path(prompt_dir or "prompts") / "repair_json.md"
+                repair_template = ""
+                if repair_path.exists():
+                    repair_template = repair_path.read_text(encoding="utf-8")
+                previous_output_hint = _truncate_text(raw_text, 2000) if raw_text else ""
+                if repair_template:
+                    extra_instruction = (
+                        repair_template.replace("{{validation_errors}}", " / ".join(protocol_errors))
+                        .replace("{{previous_output}}", previous_output_hint)
+                        .replace("{{schema}}", json.dumps(schema, ensure_ascii=False, indent=2))
                     )
-                extra_instruction = (
-                    "你上一条输出没有通过 JSON Schema 校验："
-                    + " / ".join(protocol_errors)
-                    + "。请在不改变任务目标的前提下输出一个合法 JSON 对象。\n"
-                    + "禁止输出任何 JSON 之外文本；首字符必须是 {，末字符必须是 }。\n"
-                    + previous_output_hint
-                    + "请严格匹配以下 schema：\n"
-                    + json.dumps(schema, ensure_ascii=False, indent=2)
-                )
+                else:
+                    extra_instruction = (
+                        "你上一条输出没有通过 JSON Schema 校验："
+                        + " / ".join(protocol_errors)
+                        + "。请在不改变任务目标的前提下输出一个合法 JSON 对象。\n"
+                        + "禁止输出任何 JSON 之外文本；首字符必须是 {，末字符必须是 }。\n"
+                        + (previous_output_hint + "\n" if previous_output_hint else "")
+                        + "请严格匹配以下 schema：\n"
+                        + json.dumps(schema, ensure_ascii=False, indent=2)
+                    )
 
             if dry_run_triggered:
                 break

@@ -278,6 +278,39 @@ class TestGeminiAdapter(unittest.TestCase):
         self.assertIn("有条件通过", result["text"])
         self.assertEqual(len(result.get("raw_stdout_lines", [])), 2)
 
+    def test_cli_uses_stdin_when_prompt_via_stdin(self) -> None:
+        captured: dict[str, object] = {}
+
+        def _fake_run_stream_process(**kwargs):
+            captured["stdin_text"] = kwargs.get("stdin_text")
+            on_stdout_line = kwargs["on_stdout_line"]
+            on_stdout_line(
+                json.dumps(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": "ok",
+                        "delta": True,
+                    }
+                )
+            )
+            return SimpleNamespace(elapsed_ms=5)
+
+        with patch("src.providers.gemini.resolve_gemini_command", return_value="gemini"), patch(
+            "src.providers.gemini.run_stream_process",
+            side_effect=_fake_run_stream_process,
+        ):
+            result = invoke_gemini(
+                "ping",
+                stream=False,
+                adapter="gemini-cli",
+                output_format="stream-json",
+                prompt_via_stdin=True,
+            )
+
+        self.assertEqual(result["text"], "ok")
+        self.assertEqual(captured.get("stdin_text"), "ping")
+
 
 if __name__ == "__main__":
     unittest.main()

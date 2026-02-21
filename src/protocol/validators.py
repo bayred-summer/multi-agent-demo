@@ -200,6 +200,7 @@ def build_agent_output_schema(current_agent: str) -> Dict[str, Any]:
                     "implementation_plan",
                     "execution_evidence",
                     "risks_and_rollback",
+                    "deliverables",
                 ],
                 "properties": {
                     "task_understanding": {"type": "string"},
@@ -217,6 +218,20 @@ def build_agent_output_schema(current_agent: str) -> Dict[str, Any]:
                         },
                     },
                     "risks_and_rollback": {"type": "string"},
+                    "deliverables": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["path"],
+                            "properties": {
+                                "path": {"type": "string"},
+                                "kind": {"type": "string"},
+                                "summary": {"type": "string"},
+                            },
+                        },
+                    },
                 },
             },
             "next_question": {
@@ -521,6 +536,7 @@ def validate_json_protocol_content(
             "implementation_plan",
             "execution_evidence",
             "risks_and_rollback",
+            "deliverables",
         }
         unknown_result_keys = set(result.keys()) - required_result_keys
         for key in sorted(unknown_result_keys):
@@ -560,11 +576,50 @@ def validate_json_protocol_content(
     else:
         _append_error(errors, err.E_SCHEMA_INVALID_FORMAT, "result.execution_evidence must be list")
 
+    deliverables = result.get("deliverables")
+    normalized_deliverables: List[Dict[str, str]] = []
+    if isinstance(deliverables, list):
+        if not deliverables:
+            _append_error(errors, err.E_SCHEMA_INVALID_FORMAT, "result.deliverables must be non-empty list")
+        for idx, item in enumerate(deliverables, start=1):
+            if not isinstance(item, dict):
+                _append_error(
+                    errors,
+                    err.E_SCHEMA_INVALID_FORMAT,
+                    f"invalid deliverables format at index {idx}",
+                )
+                continue
+            unknown_keys = set(item.keys()) - {"path", "kind", "summary"}
+            if unknown_keys:
+                _append_error(
+                    errors,
+                    err.E_SCHEMA_INVALID_FORMAT,
+                    f"deliverables item {idx} has unexpected field(s): {', '.join(sorted(unknown_keys))}",
+                )
+            path_value = item.get("path")
+            if not isinstance(path_value, str) or not path_value.strip():
+                _append_error(
+                    errors,
+                    err.E_SCHEMA_INVALID_FORMAT,
+                    f"deliverables item {idx} must include non-empty path",
+                )
+                continue
+            normalized_deliverables.append(
+                {
+                    "path": path_value,
+                    "kind": str(item.get("kind", "")).strip(),
+                    "summary": str(item.get("summary", "")).strip(),
+                }
+            )
+    else:
+        _append_error(errors, err.E_SCHEMA_INVALID_FORMAT, "result.deliverables must be list")
+
     parsed_delivery = build_delivery_content(
         task_understanding=str(result.get("task_understanding", "")),
         implementation_plan=str(result.get("implementation_plan", "")),
         execution_evidence=normalized_evidence,
         risks_and_rollback=str(result.get("risks_and_rollback", "")),
+        deliverables=normalized_deliverables,
         next_question=next_question.strip() if isinstance(next_question, str) else "",
     )
     parsed_delivery["status"] = status if isinstance(status, str) else parsed_delivery["status"]

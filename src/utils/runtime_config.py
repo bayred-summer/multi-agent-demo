@@ -59,6 +59,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "auth_mode": "auto",
             "approval_mode": "default",
             "output_format": "stream-json",
+            "prompt_via_stdin": None,
             "yolo": False,
             "no_browser": False,
             "proxy": "",
@@ -227,6 +228,12 @@ def _normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
             gemini_cfg["output_format"] = str(
                 gemini_cfg.get("output_format", "stream-json")
             )
+            if "prompt_via_stdin" in gemini_cfg:
+                gemini_cfg["prompt_via_stdin"] = (
+                    None
+                    if gemini_cfg.get("prompt_via_stdin") is None
+                    else bool(gemini_cfg.get("prompt_via_stdin"))
+                )
             gemini_cfg["yolo"] = bool(gemini_cfg.get("yolo", False))
             gemini_cfg["no_browser"] = bool(gemini_cfg.get("no_browser", False))
             gemini_cfg["proxy"] = str(gemini_cfg.get("proxy", "")).strip()

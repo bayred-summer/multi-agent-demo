@@ -66,6 +66,9 @@ def _fake_invoke(
                         {"command": "python -V", "result": "Python 3.12"}
                     ],
                     "risks_and_rollback": "none",
+                    "deliverables": [
+                        {"path": "train.py", "kind": "file", "summary": "entrypoint"}
+                    ],
                 },
                 "next_question": "星黛露是否开始评审？",
                 "warnings": [],
@@ -117,6 +120,7 @@ class TestOrchestratorAuditLogging(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             workdir = Path(tmp_dir) / "workspace"
             workdir.mkdir(parents=True, exist_ok=True)
+            (workdir / "train.py").write_text("print('ok')\n", encoding="utf-8")
             config_path = Path(tmp_dir) / "config.toml"
             logs_dir = Path(tmp_dir) / "logs"
 

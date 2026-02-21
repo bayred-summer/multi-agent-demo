@@ -31,6 +31,7 @@ model = "gemini-3-pro-preview"
 auth_mode = "auto"
 approval_mode = "auto_edit"
 output_format = "stream-json"
+prompt_via_stdin = true
 yolo = false
 no_browser = false
 proxy = ""
@@ -47,6 +48,7 @@ mcp_cleanup_response = true
 name = "Friends Bar"
 default_rounds = 4
 start_agent = "duffy"
+prompt_dir = "prompts"
 
 [friends_bar.safety]
 read_only = false

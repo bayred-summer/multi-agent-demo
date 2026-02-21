@@ -545,6 +545,7 @@ def _invoke_gemini_cli(
     proxy: Optional[str],
     no_proxy: Optional[str],
     proxy_args: bool,
+    prompt_via_stdin: Optional[bool],
     include_directories: Optional[List[str]],
     print_stderr: bool,
     event_hook: Optional[Callable[[str, Dict[str, Any]], None]],
@@ -561,7 +562,14 @@ def _invoke_gemini_cli(
     if fmt not in {"text", "json", "stream-json"}:
         raise ValueError("output_format must be one of: text, json, stream-json")
 
-    args: List[str] = ["-p", prompt, "--output-format", fmt]
+    prompt_bytes = len(prompt.encode("utf-8"))
+    resolved_via_stdin = (
+        bool(prompt_via_stdin)
+        if prompt_via_stdin is not None
+        else (os.name == "nt" and prompt_bytes > 3000)
+    )
+    prompt_arg = " " if resolved_via_stdin else prompt
+    args: List[str] = ["-p", prompt_arg, "--output-format", fmt]
     if model:
         args += ["--model", model]
     if approval_mode:
@@ -594,6 +602,8 @@ def _invoke_gemini_cli(
             "adapter": GEMINI_ADAPTER_CLI,
             "command": gemini_command,
             "args": list(args),
+            "stdin_prompt": resolved_via_stdin,
+            "prompt_bytes": prompt_bytes,
             "proxy": _strip_optional_text(proxy),
             "no_proxy": _strip_optional_text(no_proxy),
             "proxy_args": bool(proxy_args),
@@ -746,6 +756,7 @@ def _invoke_gemini_cli(
             on_first_byte=lambda payload: _emit_event(
                 event_hook, "subprocess.first_byte", payload
             ),
+            stdin_text=prompt if resolved_via_stdin else None,
             inherit_stdin=False,
         )
     except ProcessExecutionError as exc:
@@ -802,6 +813,7 @@ def invoke_gemini(
     proxy: Optional[str] = None,
     no_proxy: Optional[str] = None,
     proxy_args: bool = False,
+    prompt_via_stdin: Optional[bool] = None,
     include_directories: Optional[List[str]] = None,
     print_stderr: bool = False,
     adapter: Optional[str] = None,
@@ -876,6 +888,7 @@ def invoke_gemini(
         proxy=proxy,
         no_proxy=no_proxy,
         proxy_args=proxy_args,
+        prompt_via_stdin=prompt_via_stdin,
         include_directories=include_directories,
         print_stderr=print_stderr,
         event_hook=event_hook,

@@ -187,6 +187,7 @@ def run_stream_process(
     on_stderr_line: Optional[Callable[[str], None]] = None,
     on_process_start: Optional[Callable[[Dict[str, Any]], None]] = None,
     on_first_byte: Optional[Callable[[Dict[str, Any]], None]] = None,
+    stdin_text: Optional[str] = None,
     inherit_stdin: bool = False,
 ) -> ProcessResult:
     """运行一个流式 CLI 子进程。"""
@@ -263,7 +264,13 @@ def run_stream_process(
         try:
             process = subprocess.Popen(
                 [command, *args],
-                stdin=None if inherit_stdin else subprocess.DEVNULL,
+                stdin=(
+                    None
+                    if inherit_stdin
+                    else subprocess.PIPE
+                    if stdin_text is not None
+                    else subprocess.DEVNULL
+                ),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=workdir,
@@ -284,6 +291,20 @@ def run_stream_process(
 
         assert process.stdout is not None
         assert process.stderr is not None
+
+        if stdin_text is not None and process.stdin is not None:
+            try:
+                process.stdin.write(stdin_text)
+                if not stdin_text.endswith("\n"):
+                    process.stdin.write("\n")
+                process.stdin.flush()
+            except Exception:
+                pass
+            finally:
+                try:
+                    process.stdin.close()
+                except Exception:
+                    pass
 
         if on_process_start:
             try:

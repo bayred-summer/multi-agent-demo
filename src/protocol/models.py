@@ -68,6 +68,7 @@ def build_delivery_content(
     implementation_plan: str,
     execution_evidence: List[Dict[str, str]],
     risks_and_rollback: str,
+    deliverables: List[Dict[str, str]],
     next_question: str,
 ) -> Dict[str, Any]:
     """Create normalized delivery content."""
@@ -79,6 +80,7 @@ def build_delivery_content(
             "implementation_plan": implementation_plan,
             "execution_evidence": execution_evidence,
             "risks_and_rollback": risks_and_rollback,
+            "deliverables": deliverables,
         },
         "warnings": [],
         "errors": [],

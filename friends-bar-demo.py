@@ -71,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional deterministic seed for the run",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable verbose agent stream logs (raw provider lines and tool events)",
+    )
     return parser
 
 
@@ -85,6 +90,7 @@ def main() -> int:
             project_path=args.project_path,
             use_session=args.use_session,
             stream=True,
+            stream_debug=args.debug,
             timeout_level=args.timeout_level,
             config_path="config.toml",
             seed=args.seed,

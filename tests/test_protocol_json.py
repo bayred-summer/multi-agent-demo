@@ -41,6 +41,7 @@ class TestProtocolJson(unittest.TestCase):
                 "implementation_plan": "plan",
                 "execution_evidence": [{"command": "python -V", "result": "3.12"}],
                 "risks_and_rollback": "none",
+                "deliverables": [{"path": "train.py", "kind": "file", "summary": "entrypoint"}],
             },
             "next_question": "是否继续？",
             "warnings": [],
