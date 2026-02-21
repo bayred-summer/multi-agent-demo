@@ -63,7 +63,7 @@ class TestProtocolContract(unittest.TestCase):
                 "status": "ok",
                 "acceptance": "pass",
                 "verification": [
-                    {"command": "Get-Content model.py", "result": "ok"},
+                    {"command": "cat model.py", "result": "ok"},
                     {"command": "python -m pytest -q", "result": "1 passed"},
                 ],
                 "root_cause": [],

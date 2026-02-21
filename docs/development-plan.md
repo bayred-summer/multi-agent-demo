@@ -15,6 +15,7 @@
 1. 运行标识贯穿：`run_id/seed` 进入每条审计日志与最终输出。
 2. 调试能力：支持 `--dry-run` 与 `--dump-prompt`，可在不调用 CLI 时生成 prompt/schema。
 3. 安全护栏：新增 `friends_bar.safety`（只读模式、工作目录白名单、命令 allow/deny）。
+4. Windows 妥协点清理：完成跨平台命令解析与路径校验收敛，见 `docs/windows-compromise-remediation-2026-02-21.md`。
 
 ## 2. 统一目标（整合后）
 

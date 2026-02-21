@@ -147,13 +147,17 @@ class TestGeminiAdapter(unittest.TestCase):
         env = captured.get("env")
         self.assertIsInstance(env, dict)
         assert isinstance(env, dict)
-        self.assertEqual(env.get("NO_PROXY"), "localhost,127.0.0.1")
-        self.assertEqual(env.get("no_proxy"), "localhost,127.0.0.1")
+        no_proxy_value = str(env.get("NO_PROXY", ""))
+        no_proxy_lower_value = str(env.get("no_proxy", ""))
+        self.assertIn("localhost", no_proxy_value)
+        self.assertIn("127.0.0.1", no_proxy_value)
+        self.assertIn("localhost", no_proxy_lower_value)
+        self.assertIn("127.0.0.1", no_proxy_lower_value)
 
     def test_cli_includes_workdir_and_extra_include_directories(self) -> None:
         captured: dict[str, object] = {}
-        workdir = r"E:\PythonProjects\test_project1"
-        extra_dir = r"E:\PythonProjects\shared_notes"
+        workdir = "/home/user/work/test_project1"
+        extra_dir = "/home/user/work/shared_notes"
 
         def _fake_run_stream_process(**kwargs):
             captured["args"] = kwargs.get("args")
@@ -310,6 +314,79 @@ class TestGeminiAdapter(unittest.TestCase):
 
         self.assertEqual(result["text"], "ok")
         self.assertEqual(captured.get("stdin_text"), "ping")
+
+    def test_cli_auto_uses_stdin_for_large_prompt(self) -> None:
+        captured: dict[str, object] = {}
+        large_prompt = "x" * 3501
+
+        def _fake_run_stream_process(**kwargs):
+            captured["stdin_text"] = kwargs.get("stdin_text")
+            on_stdout_line = kwargs["on_stdout_line"]
+            on_stdout_line(
+                json.dumps(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": "ok",
+                        "delta": True,
+                    }
+                )
+            )
+            return SimpleNamespace(elapsed_ms=5)
+
+        with patch("src.providers.gemini.resolve_gemini_command", return_value="gemini"), patch(
+            "src.providers.gemini.run_stream_process",
+            side_effect=_fake_run_stream_process,
+        ):
+            result = invoke_gemini(
+                large_prompt,
+                stream=False,
+                adapter="gemini-cli",
+                output_format="stream-json",
+            )
+
+        self.assertEqual(result["text"], "ok")
+        self.assertEqual(captured.get("stdin_text"), large_prompt)
+
+    def test_cli_yolo_normalizes_approval_mode_without_conflict(self) -> None:
+        captured: dict[str, object] = {}
+
+        def _fake_run_stream_process(**kwargs):
+            captured["args"] = kwargs.get("args")
+            on_stdout_line = kwargs["on_stdout_line"]
+            on_stdout_line(
+                json.dumps(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": "ok",
+                        "delta": True,
+                    }
+                )
+            )
+            return SimpleNamespace(elapsed_ms=6)
+
+        with patch("src.providers.gemini.resolve_gemini_command", return_value="gemini"), patch(
+            "src.providers.gemini.run_stream_process",
+            side_effect=_fake_run_stream_process,
+        ):
+            result = invoke_gemini(
+                "ping",
+                stream=False,
+                adapter="gemini-cli",
+                output_format="stream-json",
+                approval_mode="auto_edit",
+                yolo=True,
+            )
+
+        self.assertEqual(result["text"], "ok")
+        args = captured.get("args")
+        self.assertIsInstance(args, list)
+        assert isinstance(args, list)
+        self.assertIn("--approval-mode", args)
+        idx = args.index("--approval-mode")
+        self.assertEqual(args[idx + 1], "yolo")
+        self.assertNotIn("--yolo", args)
 
 
 if __name__ == "__main__":

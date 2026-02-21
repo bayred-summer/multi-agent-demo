@@ -30,6 +30,7 @@ GEMINI_ADAPTER_ENV = "GEMINI_ADAPTER"
 GEMINI_ADAPTER_CLI = "gemini-cli"
 GEMINI_ADAPTER_ANTIGRAVITY = "antigravity"
 GEMINI_ADAPTER_SDK = "google-genai"
+PROMPT_STDIN_THRESHOLD_BYTES = 3000
 
 
 def resolve_gemini_command() -> str:
@@ -37,12 +38,6 @@ def resolve_gemini_command() -> str:
     custom_bin = os.environ.get("GEMINI_BIN")
     if custom_bin:
         return custom_bin
-    if os.name == "nt":
-        app_data = os.environ.get("APPDATA")
-        if app_data:
-            gemini_cmd = os.path.join(app_data, "npm", "gemini.cmd")
-            if os.path.exists(gemini_cmd):
-                return gemini_cmd
     return "gemini"
 
 
@@ -562,22 +557,26 @@ def _invoke_gemini_cli(
     if fmt not in {"text", "json", "stream-json"}:
         raise ValueError("output_format must be one of: text, json, stream-json")
 
+    resolved_approval_mode = _strip_optional_text(approval_mode)
+    # Gemini CLI rejects using --yolo and --approval-mode together.
+    # Normalize to a single flag path so runtime config can safely set either.
+    if yolo:
+        resolved_approval_mode = "yolo"
+
     prompt_bytes = len(prompt.encode("utf-8"))
     resolved_via_stdin = (
         bool(prompt_via_stdin)
         if prompt_via_stdin is not None
-        else (os.name == "nt" and prompt_bytes > 3000)
+        else (prompt_bytes > PROMPT_STDIN_THRESHOLD_BYTES)
     )
     prompt_arg = " " if resolved_via_stdin else prompt
     args: List[str] = ["-p", prompt_arg, "--output-format", fmt]
     if model:
         args += ["--model", model]
-    if approval_mode:
-        args += ["--approval-mode", approval_mode]
+    if resolved_approval_mode:
+        args += ["--approval-mode", resolved_approval_mode]
     if sandbox is not None:
         args += ["--sandbox", "true" if sandbox else "false"]
-    if yolo:
-        args.append("--yolo")
     if session_id:
         args += ["--resume", session_id]
     if allowed_tools:

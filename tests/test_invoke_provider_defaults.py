@@ -142,7 +142,7 @@ class TestInvokeProviderDefaults(unittest.TestCase):
                 textwrap.dedent(
                     """
                     [providers.gemini]
-                    include_directories = ["E:\\\\PythonProjects\\\\test_project1"]
+                    include_directories = ["/home/user/work/test_project1"]
                     """
                 ).strip()
                 + "\n",
@@ -160,7 +160,7 @@ class TestInvokeProviderDefaults(unittest.TestCase):
 
             self.assertEqual(
                 captured.get("include_directories"),
-                ["E:\\PythonProjects\\test_project1"],
+                ["/home/user/work/test_project1"],
             )
 
     def test_claude_stale_session_auto_clears_and_retries_once(self) -> None:

@@ -15,55 +15,10 @@ from src.utils.process_runner import (
 )
 
 
-def _list_directories(path: Path) -> List[str]:
-    """安全获取目录下一级子目录名称。"""
-    try:
-        return [item.name for item in path.iterdir() if item.is_dir()]
-    except Exception:
-        return []
-
-
-def _find_vscode_bundled_codex() -> Optional[str]:
-    """Windows 下尝试定位 VS Code 扩展内置 codex.exe。"""
-    if os.name != "nt":
-        return None
-
-    user_profile = os.environ.get("USERPROFILE")
-    if not user_profile:
-        return None
-
-    extensions_dir = Path(user_profile) / ".vscode" / "extensions"
-    extension_dirs = sorted(
-        (
-            name
-            for name in _list_directories(extensions_dir)
-            if name.startswith("openai.chatgpt-")
-        ),
-        reverse=True,
-    )
-
-    for extension_dir in extension_dirs:
-        exe_path = (
-            extensions_dir
-            / extension_dir
-            / "bin"
-            / "windows-x86_64"
-            / "codex.exe"
-        )
-        if exe_path.exists():
-            return str(exe_path)
-
-    return None
-
-
 def resolve_codex_command() -> str:
     """解析最终要执行的 codex 命令路径。"""
     if os.environ.get("CODEX_BIN"):
         return os.environ["CODEX_BIN"]
-
-    bundled = _find_vscode_bundled_codex()
-    if bundled:
-        return bundled
 
     return "codex"
 

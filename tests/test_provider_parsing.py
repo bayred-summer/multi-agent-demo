@@ -8,14 +8,16 @@ from src.providers.claude_minimax import (
     _collapse_repeated_json_objects,
     _extract_structured_output,
     _pick_final_text,
+    resolve_claude_command,
 )
-from src.providers.codex import _extract_assistant_text
+from src.providers.codex import _extract_assistant_text, resolve_codex_command
 from src.providers.gemini import (
     _extract_assistant_text as _extract_gemini_text,
     _normalize_auth_mode,
     _pick_final_text as _pick_gemini_final_text,
     _resolve_adapter,
     _validate_auth_prerequisites,
+    resolve_gemini_command,
 )
 
 
@@ -110,6 +112,33 @@ class TestProviderParsing(unittest.TestCase):
         self.assertEqual(_resolve_adapter("antigravity-mcp"), "antigravity")
         with self.assertRaises(ValueError):
             _resolve_adapter("invalid-adapter")
+
+    def test_codex_command_resolution(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"CODEX_BIN": "/tmp/custom-codex"}, clear=True):
+            self.assertEqual(resolve_codex_command(), "/tmp/custom-codex")
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(resolve_codex_command(), "codex")
+
+    def test_claude_command_resolution(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"CLAUDE_BIN": "/tmp/custom-claude"}, clear=True):
+            self.assertEqual(resolve_claude_command(), ("/tmp/custom-claude", []))
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(resolve_claude_command(), ("claude", []))
+
+    def test_gemini_command_resolution(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"GEMINI_BIN": "/tmp/custom-gemini"}, clear=True):
+            self.assertEqual(resolve_gemini_command(), "/tmp/custom-gemini")
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(resolve_gemini_command(), "gemini")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 from pathlib import Path
 import sys
 import time
@@ -37,6 +38,9 @@ from src.utils.runtime_config import load_runtime_config
 AGENT_TURN_ORDER = (DUFFY, LINA_BELL, STELLA)
 # Keep retries small but non-zero for strict schema re-generation.
 MAX_PROTOCOL_RETRY = 3
+_UNIX_PATH_ALLOWED_CHARS = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-/"
+)
 
 
 def _next_agent(current_name: str) -> str:
@@ -57,16 +61,17 @@ def _expected_schema_for_agent(agent_name: str) -> str:
 
 
 def _path_within(child: Path, parent: Path) -> bool:
-    """Return True if child is within parent (resolved)."""
+    """Return True if child is within parent (resolved, case-safe)."""
     try:
         child_resolved = child.resolve()
         parent_resolved = parent.resolve()
     except OSError:
         return False
-    try:
-        return child_resolved.is_relative_to(parent_resolved)
-    except AttributeError:  # py<3.9
-        return str(child_resolved).startswith(str(parent_resolved))
+    child_parts = tuple(os.path.normcase(part) for part in child_resolved.parts)
+    parent_parts = tuple(os.path.normcase(part) for part in parent_resolved.parts)
+    if len(parent_parts) > len(child_parts):
+        return False
+    return child_parts[: len(parent_parts)] == parent_parts
 
 
 def _ensure_allowed_roots(project_path: str, allowed_roots: List[str]) -> None:
@@ -79,7 +84,7 @@ def _ensure_allowed_roots(project_path: str, allowed_roots: List[str]) -> None:
             continue
         if _path_within(project, Path(root)):
             return
-    raise ValueError(f"project_path is 禺丕乇噩鍏佽鏍圭洰褰曞垪琛? {project_path}")
+    raise ValueError(f"project_path is outside allowed_roots: {project_path}")
 
 
 def _collect_commands(protocol_content: Dict[str, Any], agent_name: str) -> List[str]:
@@ -120,6 +125,106 @@ def _command_policy_errors(
             continue
         if allow_patterns and not any(pat.search(cmd) for pat in allow_patterns):
             errors.append(f"E_SAFETY_COMMAND_NOT_ALLOWED: {cmd}")
+    return errors
+
+
+def _extract_requested_workdir(user_request: str) -> Optional[str]:
+    """Best-effort extract absolute workdir path from user request text."""
+    text = (user_request or "").strip()
+    if not text:
+        return None
+
+    candidates: List[str] = []
+    idx = 0
+    while idx < len(text):
+        if text[idx] != "/":
+            idx += 1
+            continue
+        prev = text[idx - 1] if idx > 0 else ""
+        # Skip URL separators like "https://..."
+        if prev in {":", "/"}:
+            idx += 1
+            continue
+
+        end = idx
+        while end < len(text) and text[end] in _UNIX_PATH_ALLOWED_CHARS:
+            end += 1
+        candidate = text[idx:end].rstrip("/")
+        if candidate and len(candidate) > 1:
+            candidates.append(candidate)
+        idx = max(end, idx + 1)
+
+    # Prefer deeper/longer paths first.
+    for candidate in sorted(set(candidates), key=len, reverse=True):
+        path = Path(candidate)
+        if path.exists() and path.is_dir():
+            return str(path)
+        parent = path.parent
+        if parent != path and parent.exists() and parent.is_dir():
+            return str(path)
+    return None
+
+
+def _resolve_workdir(*, project_path: Optional[str], user_request: str) -> tuple[str, str]:
+    """Resolve unified workdir and explain the source."""
+    if project_path is not None:
+        return str(Path(project_path)), "project_path_arg"
+
+    inferred = _extract_requested_workdir(user_request)
+    if inferred:
+        return str(Path(inferred)), "user_request"
+
+    return str(Path.cwd()), "cwd_default"
+
+
+def _extract_absolute_paths_from_command(command: str) -> List[str]:
+    """Extract absolute filesystem paths embedded in a shell-like command string."""
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        tokens = command.split()
+
+    extracted: List[str] = []
+    for token in tokens:
+        raw = str(token or "").strip()
+        if not raw:
+            continue
+
+        candidates = [raw]
+        # Handle flag/value forms like "--file=/abs/path".
+        if raw.startswith("-") and "=" in raw:
+            candidates.append(raw.split("=", 1)[1].strip())
+
+        for value in candidates:
+            normalized = value.strip().strip("'\"`")
+            normalized = normalized.lstrip("(").rstrip(";,|&)")
+            if not normalized or "://" in normalized:
+                continue
+            if normalized.startswith("/"):
+                extracted.append(normalized)
+    return extracted
+
+
+def _command_workdir_errors(commands: List[str], *, workdir: str) -> List[str]:
+    """Reject evidence/verification commands that reference absolute paths outside workdir."""
+    errors: List[str] = []
+    workdir_path = Path(workdir)
+
+    for cmd in commands:
+        outside_paths: List[str] = []
+        for raw_path in _extract_absolute_paths_from_command(cmd):
+            try:
+                resolved = Path(raw_path).resolve()
+            except OSError:
+                continue
+            if not _path_within(resolved, workdir_path):
+                outside_paths.append(raw_path)
+        if outside_paths:
+            errors.append(
+                "E_WORKDIR_COMMAND_OUTSIDE: "
+                + ", ".join(sorted(set(outside_paths)))
+                + f" | cmd={cmd}"
+            )
     return errors
 
 
@@ -382,7 +487,7 @@ def _validate_agent_output(
 
 
 def _safe_print(text: str) -> None:
-    """Print text safely under non-UTF-8 Windows consoles."""
+    """Print text safely when stdout cannot encode the text."""
     try:
         print(text)
     except UnicodeEncodeError:
@@ -743,25 +848,34 @@ def _build_turn_prompt(
     )
 
     mode = (response_mode or "text_only").strip().lower()
+    workdir_lock = (
+        f"工作目录一致性约束：所有命令、读写、交付与验收必须在执行目录 {workdir} 内闭环完成；"
+        "禁止在其它目录创建镜像副本或同步副本。"
+    )
     if mode == "execute":
         mode_instruction = (
             "当前为执行模式：你可以调用工具并在执行目录直接创建/修改文件，"
             "不要请求授权，不要停留在计划层。"
+            f"{workdir_lock}"
         )
     else:
         mode_instruction = (
             "当前为对话模式：只输出 JSON，不调用工具，不执行命令，不读写文件。"
+            f"{workdir_lock}"
         )
 
     role_guard = ""
     if current_agent == STELLA:
         mode_instruction = (
-            "当前为静态评审模式：你可以调用只读工具（如 read_file/list_directory/grep_search）收集证据；"
-            "禁止执行 shell 命令（如 python/pytest）和禁止修改/删除文件。"
+            "当前为动态评审模式：你可以调用只读工具收集证据，"
+            "并允许执行 shell 验证命令（如 python -m pytest、python -m unittest、ls、grep）；"
+            "禁止修改/删除业务文件。"
+            f"{workdir_lock}"
         )
         role_guard = (
             "角色硬约束：你是评审官，不是实现者。"
-            "请基于静态证据完成评审，verification 至少包含2条证据（command/result 格式，可写 read_file/grep_search）。"
+            "请基于动态核验证据完成评审，verification 至少包含2条证据（command/result 格式，"
+            "建议至少包含1条 shell 验证命令）。"
         )
     elif current_agent == DUFFY:
         role_guard = (
@@ -1004,12 +1118,22 @@ def run_two_agent_dialogue(
         else start_agent
     )
 
-    resolved_workdir = str(Path.cwd()) if project_path is None else str(Path(project_path))
-    if not Path(resolved_workdir).exists():
-        raise ValueError(f"project_path does not exist: {resolved_workdir}")
-    if not Path(resolved_workdir).is_dir():
-        raise ValueError(f"project_path is not a directory: {resolved_workdir}")
+    resolved_workdir, workdir_source = _resolve_workdir(
+        project_path=project_path, user_request=user_request
+    )
+    if workdir_source == "cwd_default":
+        raise ValueError(
+            "workdir must be explicitly specified via --project-path "
+            "or as an absolute path in user_request"
+        )
     _ensure_allowed_roots(resolved_workdir, safety_cfg.get("allowed_roots", []))
+    resolved_workdir_path = Path(resolved_workdir)
+    if resolved_workdir_path.exists():
+        if not resolved_workdir_path.is_dir():
+            raise ValueError(f"project_path is not a directory: {resolved_workdir}")
+    else:
+        resolved_workdir_path.mkdir(parents=True, exist_ok=True)
+    resolved_workdir = str(resolved_workdir_path)
 
     current_agent = normalize_agent_name(resolved_start_agent)
     transcript: List[Dict[str, Any]] = []
@@ -1032,6 +1156,7 @@ def run_two_agent_dialogue(
                 "rounds": resolved_rounds,
                 "start_agent": current_agent,
                 "project_path": resolved_workdir,
+                "project_path_source": workdir_source,
                 "use_session": (
                     "config_default" if use_session is None else bool(use_session)
                 ),
@@ -1318,6 +1443,25 @@ def run_two_agent_dialogue(
                     if safety_errors:
                         is_valid = False
                         protocol_errors = protocol_errors + safety_errors
+                    if is_valid and current_agent in {LINA_BELL, STELLA}:
+                        workdir_errors = _command_workdir_errors(
+                            commands,
+                            workdir=resolved_workdir,
+                        )
+                        if workdir_errors:
+                            is_valid = False
+                            protocol_errors = protocol_errors + workdir_errors
+                            audit_logger.log(
+                                "workdir.verify",
+                                {
+                                    "turn": turn,
+                                    "attempt": attempt_count,
+                                    "agent": current_agent,
+                                    "workdir": resolved_workdir,
+                                    "commands": commands,
+                                    "errors": workdir_errors,
+                                },
+                            )
                     if (
                         is_valid
                         and current_agent == LINA_BELL

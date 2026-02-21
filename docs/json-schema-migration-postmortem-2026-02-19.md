@@ -153,15 +153,14 @@
 
 ## 6. 快速排障命令
 
-```powershell
+```bash
 # 查看最近一次运行摘要
-Get-ChildItem .friends-bar/logs/*.summary.json | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+ls -t .friends-bar/logs/*.summary.json | head -n 1
 
 # 看某次运行中协议失败原因
 rg -n "E_SCHEMA_|run.failed|turn.attempt.completed" .friends-bar/logs/<run_id>.jsonl
 
 # 本地回归
 python -m pytest -q
-python friends-bar-demo.py "请仅做最小 JSON 协作演示，不要执行文件修改" --rounds 2 --start-agent linabell --timeout-level quick --project-path "e:\PythonProjects\multi-agent"
+python friends-bar-demo.py "请仅做最小 JSON 协作演示，不要执行文件修改" --rounds 2 --start-agent linabell --timeout-level quick --project-path "/home/bayred/work/multi-agent"
 ```
-

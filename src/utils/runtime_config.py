@@ -378,7 +378,9 @@ def _load_toml_dict(config_file: Path) -> Dict[str, Any]:
         return {}
 
     try:
-        raw = tomllib.loads(config_file.read_text(encoding="utf-8-sig"))
+        text = config_file.read_text(encoding="utf-8")
+        # Strip optional UTF-8 BOM for editor interoperability.
+        raw = tomllib.loads(text.lstrip("\ufeff"))
         return raw if isinstance(raw, dict) else {}
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         _debug_log(f"load toml failed: path={config_file}, err={exc}")

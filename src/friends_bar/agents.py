@@ -15,12 +15,6 @@ LINA_BELL_ZH = "玲娜贝儿"
 DUFFY_ZH = "达菲"
 STELLA_ZH = "星黛露"
 
-# Backward-compatible mojibake aliases seen in old config files.
-LINA_BELL_MOJIBAKE = "歆庫彻甏旊灴"
-DUFFY_MOJIBAKE = "雽勲穮"
-STELLA_MOJIBAKE = "鏄熼化闇?"
-
-
 @dataclass(frozen=True)
 class AgentProfile:
     """Static profile for one agent."""
@@ -78,10 +72,6 @@ AGENT_NAME_ALIASES = {
     LINA_BELL_ZH: LINA_BELL,
     DUFFY_ZH: DUFFY,
     STELLA_ZH: STELLA,
-    # Legacy mojibake aliases
-    LINA_BELL_MOJIBAKE: LINA_BELL,
-    DUFFY_MOJIBAKE: DUFFY,
-    STELLA_MOJIBAKE: STELLA,
 }
 
 

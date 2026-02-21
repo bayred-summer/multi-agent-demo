@@ -128,8 +128,8 @@ def _build_command_repr(
 ) -> str:
     """Build compact command text for logs/errors.
 
-    Large prompts can make error logs unreadable and increase mojibake risk in
-    non-UTF-8 terminals, so we keep a bounded representation.
+    Large prompts can make error logs unreadable and increase encoding-noise risk
+    in mixed terminal environments, so we keep a bounded representation.
     """
     joined = " ".join([command, *args])
     if len(joined) > max_chars:

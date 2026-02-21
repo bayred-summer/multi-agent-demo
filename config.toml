@@ -96,8 +96,16 @@ response_mode = "execute"
 [friends_bar.agents.stella.provider_options]
 adapter = "gemini-cli"
 output_format = "stream-json"
-approval_mode = "auto_edit"
+approval_mode = "yolo"
+sandbox = false
 print_stderr = true
+allowed_tools = [
+  "run_shell_command",
+  "list_directory",
+  "read_file",
+  "grep_search",
+  "cli_help",
+]
 
 # Timeout profiles
 [timeouts.quick]

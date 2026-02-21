@@ -67,7 +67,7 @@ python friends-bar-demo.py "最小演示" --rounds 1 --start-agent linabell --dr
 让 agent 直接在目标项目目录执行任务：
 
 ```bash
-python friends-bar-demo.py "请直接开始实现并提交最小可运行版本" --rounds 2 --project-path E:\PythonProjects\test_project
+python friends-bar-demo.py "请直接开始实现并提交最小可运行版本" --rounds 2 --project-path /home/bayred/work/test_project
 ```
 
 ## 统一接口

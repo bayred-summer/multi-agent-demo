@@ -46,6 +46,15 @@ class TestRuntimeConfigCache(unittest.TestCase):
             config_c = load_runtime_config(str(config_path))
             self.assertEqual(config_c["defaults"]["provider"], "claude-minimax")
 
+    def test_loads_utf8_bom_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.toml"
+            content = '[defaults]\nprovider = "codex"\n'
+            config_path.write_bytes(b"\xef\xbb\xbf" + content.encode("utf-8"))
+
+            config = load_runtime_config(str(config_path))
+            self.assertEqual(config["defaults"]["provider"], "codex")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from typing import Any, Callable, Dict, List, Optional
 
 from src.utils.process_runner import (
@@ -19,26 +18,6 @@ def resolve_claude_command() -> tuple[str, List[str]]:
     custom_bin = os.environ.get("CLAUDE_BIN")
     if custom_bin:
         return custom_bin, []
-
-    if os.name == "nt":
-        app_data = os.environ.get("APPDATA")
-        if app_data:
-            claude_js = os.path.join(
-                app_data,
-                "npm",
-                "node_modules",
-                "@anthropic-ai",
-                "claude-code",
-                "cli.js",
-            )
-            # Windows 上优先直连 node + cli.js，避免 .cmd 包装导致长参数截断。
-            if os.path.exists(claude_js) and shutil.which("node"):
-                return "node", [claude_js]
-
-            claude_cmd = os.path.join(app_data, "npm", "claude.cmd")
-            if os.path.exists(claude_cmd):
-                return claude_cmd, []
-
     return "claude", []
 
 
@@ -303,7 +282,7 @@ def invoke_claude_minimax(
             args=args,
             workdir=workdir,
             timeout=timeout,
-            # Default off to avoid mixed-channel mojibake in terminals.
+            # Default off to avoid mixed-channel encoding noise in terminals.
             stream_stderr=bool(print_stderr and stream),
             stderr_prefix="[claude stderr] ",
             on_stdout_line=on_stdout_line,
