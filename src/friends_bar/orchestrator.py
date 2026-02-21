@@ -1502,5 +1502,3 @@ def run_two_agent_dialogue(
     if stream and result_payload["log"]["log_file"]:
         _safe_print(f"\n[system] Log file: {result_payload['log']['log_file']}")
     return result_payload
-
-

@@ -169,7 +169,7 @@ def invoke_codex(
             resume_flags.append("--dangerously-bypass-approvals-and-sandbox")
         args = ["exec", "resume", *resume_flags, *base_flags, session_id, prompt]
     else:
-        args = [*exec_prefix, *base_flags, prompt]
+        args = [*exec_prefix, *base_flags]
         if sandbox_mode:
             args += ["--sandbox", str(sandbox_mode)]
 
@@ -191,6 +191,9 @@ def invoke_codex(
                 schema_temp_file = fp.name
                 schema_path = schema_temp_file
         args += ["--output-schema", schema_path]
+
+    if not session_id:
+        args.append(prompt)
 
     state: Dict[str, Any] = {
         "saw_delta": False,

@@ -31,9 +31,6 @@ CLI_ALIASES = {
     "玲娜贝儿": "codex",
     "达菲": "claude-minimax",
     "星黛露": "gemini",
-    # Backward-compatible mojibake aliases.
-    "歆庫彻甏旊灴": "codex",
-    "雽勲穮": "claude-minimax",
 }
 
 SUPPORTED_CLIS = tuple(sorted(set(PROVIDERS.keys()) | set(CLI_ALIASES.keys())))
@@ -257,5 +254,3 @@ def invoke(
         if extra_key in result:
             response[extra_key] = result.get(extra_key)
     return response
-
-
